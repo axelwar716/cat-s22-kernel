@@ -888,4 +888,26 @@ config INPUT_HISI_POWERKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called hisi_powerkey.
 
+
+config SENSORS_HALL
+	tristate "Hall effect lid sensor (hall-switch)"
+	depends on GPIOLIB && OF && SWITCH
+	help
+	  Driver for a GPIO hall effect sensor described by a "hall-switch"
+	  device tree node, as used for the lid of the CAT S22 Flip. It
+	  creates the input device "hall_sensor" (EV_SW/SW_LID) and the
+	  Android switch device "hall_switch" whose state is 1 with the lid
+	  open and 0 with the lid closed.
+
+config SENSORS_HALL_SW_LID_LINUX_POLARITY
+	bool "Report SW_LID with the Linux polarity (1 = lid closed)"
+	depends on SENSORS_HALL
+	default n
+	help
+	  By default SW_LID mirrors the switch state (1 = open, 0 = closed),
+	  which is what LineageOS for the S22 expects because its framework
+	  inverts SW_LID for "hall_sensor". Say Y if the framework does not
+	  carry that inversion. Can also be set at boot with
+	  hall_sensor.sw_lid_linux_polarity=1.
+
 endif
