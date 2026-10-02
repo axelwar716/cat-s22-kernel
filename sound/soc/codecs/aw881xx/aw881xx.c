@@ -35,6 +35,7 @@
 #include "aw881xx_reg.h"
 #include "aw881xx_monitor.h"
 #include "aw881xx_cali.h"
+#include <sound/aw88xxx.h>
 
 /******************************************************
  *
@@ -4685,6 +4686,7 @@ static int aw881xx_i2c_probe(struct i2c_client *i2c,
 	mutex_lock(&g_aw881xx_lock);
 	g_aw881xx_dev_cnt++;
 	mutex_unlock(&g_aw881xx_lock);
+	aw881xx_record_dai(1);
 	aw_dev_info(&i2c->dev, "%s: dev_cnt %d completed successfully\n",
 		__func__, g_aw881xx_dev_cnt);
 
@@ -4720,6 +4722,22 @@ static int aw881xx_i2c_remove(struct i2c_client *i2c)
 	return 0;
 }
 
+/*
+ * CAT S22 Flip: the machine driver asks at probe time whether an
+ * aw881xx registered its DAI and only then links "aw881xx-aif-5-34"
+ * into the quinary MI2S back end.
+ */
+static unsigned char aw881xx_dai_recorded;
+
+unsigned char aw881xx_record_dai(unsigned char flag)
+{
+	if (flag)
+		aw881xx_dai_recorded = 1;
+
+	return aw881xx_dai_recorded;
+}
+EXPORT_SYMBOL(aw881xx_record_dai);
+
 static const struct i2c_device_id aw881xx_i2c_id[] = {
 	{AW881XX_I2C_NAME, 0},
 	{}
@@ -4729,6 +4747,8 @@ MODULE_DEVICE_TABLE(i2c, aw881xx_i2c_id);
 
 static struct of_device_id aw881xx_dt_match[] = {
 	{.compatible = "awinic,aw881xx_smartpa"},
+	/* CAT S22 Flip v30 DT names the aw881xx/aw883xx socket generically */
+	{.compatible = "awinic,aw88xxx_smartpa"},
 	{},
 };
 

@@ -1102,4 +1102,18 @@ config SND_SOC_TFA98XX
 	depends on I2C
 	help
 	Enables support for NXP98xx Smart PA.
+config SND_SMARTPA_AW881XX
+	bool "AWINIC aw881xx smart PA (CAT S22 Flip speaker)"
+	depends on I2C
+	help
+	  AWINIC aw881xx (AW88194) I2S smart amplifier with DSP, as used for
+	  the loudspeaker on the CAT S22 Flip. Exports aw881xx_record_dai()
+	  for the vendor machine driver.
+
+config SND_SMARTPA_AW883XX
+	bool "AWINIC aw883xx DAI handshake (CAT S22 Flip)"
+	help
+	  Provides aw883xx_record_dai(), imported by the CAT S22 Flip v30
+	  vendor machine driver. No aw883xx chip driver is included.
+
 endmenu

@@ -47,7 +47,7 @@ static const char *cali_str[CALI_STR_MAX] = {"none", "start_cali", "cali_re",
 /*write cali to persist file example */
 #ifdef AW_CALI_STORE_EXAMPLE
 
-#define AWINIC_CALI_FILE  "/mnt/vendor/persist/factory/audio/aw_cali.bin"
+#define AWINIC_CALI_FILE  "/mnt/vendor/persist/aw_cali.bin"
 #define AW_INT_DEC_DIGIT 10
 
 static void aw_fs_read(struct file *file, char *buf, size_t count, loff_t *pos)

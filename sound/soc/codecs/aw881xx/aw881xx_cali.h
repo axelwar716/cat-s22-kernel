@@ -1,7 +1,8 @@
 #ifndef __AW881XX_CALI_H__
 #define __AW881XX_CALI_H__
 
-//#define AW_CALI_STORE_EXAMPLE
+/* CAT S22 Flip: calibration lives in persist, as in the v30 kernel */
+#define AW_CALI_STORE_EXAMPLE
 
 #define AW_ERRO_CALI_VALUE (0)
 
