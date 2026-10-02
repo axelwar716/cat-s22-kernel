@@ -2830,6 +2830,58 @@ static int aw881xx_load_cfg_by_hdr(struct aw881xx *aw881xx,
 	return 0;
 }
 
+/*
+ * CAT S22 Flip: the factory aw881xx_acf.bin (hdr v1.0.0.0) carries two
+ * complete DEFAULT-type data sets for the same chip_id 0x1806 / channel 0,
+ * told apart only by dde dev_name: "aw88194" (product id 0x01) and
+ * "aw88194A" (product id 0x03). The vendor driver (V1.8.0.2) picked the set
+ * by dev_name; without that, every (data_type, profile) has two matches and
+ * the scene count check fails. Filter the dde table by the product name.
+ * If no dde carries the expected name (single-device acf, empty dev_name),
+ * nothing is filtered (upstream behaviour).
+ */
+static const char *aw881xx_get_dde_dev_name(struct aw881xx *aw881xx)
+{
+	switch (aw881xx->pid) {
+	case AW881XX_PID_03:
+		return "aw88194A";
+	/*
+	 * AW881XX_PID_02: never seen on this device (aw881xx_read_product_id
+	 * maps unknown ids to PID_03); assumed to use the "aw88194" data set.
+	 */
+	case AW881XX_PID_02:
+	case AW881XX_PID_01:
+	default:
+		return "aw88194";
+	}
+}
+
+/* dev_name to filter the dde table by, or NULL if no dde carries it */
+static const char *aw881xx_dde_name_filter(struct aw881xx *aw881xx,
+				struct aw_cfg_hdr *cfg_hdr, uint32_t *match_num)
+{
+	struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
+		(struct aw_cfg_dde_v_1_0_0_0 *)((char *)cfg_hdr + cfg_hdr->a_hdr_offset);
+	const char *name = aw881xx_get_dde_dev_name(aw881xx);
+	uint32_t i, num = 0;
+
+	for (i = 0; i < cfg_hdr->a_ddt_num; i++) {
+		if (!strncmp(cfg_dde[i].dev_name, name, DEV_NAME_MAX))
+			num++;
+	}
+
+	if (match_num)
+		*match_num = num;
+
+	return num ? name : NULL;
+}
+
+static bool aw881xx_dde_name_ok(const char *name,
+				struct aw_cfg_dde_v_1_0_0_0 *cfg_dde)
+{
+	return (name == NULL) || !strncmp(cfg_dde->dev_name, name, DEV_NAME_MAX);
+}
+
 static int aw881xx_get_dde_prof_id(struct aw881xx *aw881xx, int *scene_id,
 					struct aw_cfg_dde_v_1_0_0_0 * cfg_dde)
 {
@@ -2877,11 +2929,13 @@ static int aw881xx_parse_dev_type_v_1_0_0_0(struct aw881xx *aw881xx, struct aw_c
 	struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 		(struct aw_cfg_dde_v_1_0_0_0 *)((char *)prof_hdr + prof_hdr->a_hdr_offset);
 	struct aw_prof_desc *prof_desc = aw881xx->prof_info.prof_desc;
+	const char *name = aw881xx_dde_name_filter(aw881xx, prof_hdr, NULL);
 
 	aw_dev_info(aw881xx->dev, "%s:enter\n", __func__);
 
 	for (i = 0; i < prof_hdr->a_ddt_num; i++) {
-		if ((aw881xx->i2c->adapter->nr == cfg_dde[i].dev_bus) &&
+		if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+			(aw881xx->i2c->adapter->nr == cfg_dde[i].dev_bus) &&
 			(aw881xx->i2c->addr == cfg_dde[i].dev_addr) &&
 			(cfg_dde[i].type == AW_DEV_TYPE_ID)) {
 			if (cfg_dde[i].data_type == ACF_SEC_TYPE_MONITOR) {
@@ -2918,11 +2972,13 @@ static int aw881xx_parse_dev_default_type_v_1_0_0_0(struct aw881xx *aw881xx, str
 	struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 		(struct aw_cfg_dde_v_1_0_0_0 *)((char *)prof_hdr + prof_hdr->a_hdr_offset);
 	struct aw_prof_desc *prof_desc = aw881xx->prof_info.prof_desc;
+	const char *name = aw881xx_dde_name_filter(aw881xx, prof_hdr, NULL);
 
 	aw_dev_info(aw881xx->dev, "%s:enter\n", __func__);
 
 	for (i = 0; i < prof_hdr->a_ddt_num; i++) {
-		if ((cfg_dde[i].type == AW_DEV_DEFAULT_TYPE_ID) &&
+		if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+			(cfg_dde[i].type == AW_DEV_DEFAULT_TYPE_ID) &&
 			(aw881xx->channel == cfg_dde[i].dev_index) &&
 			(aw881xx->chipid == cfg_dde[i].chip_id)) {
 			if (cfg_dde[i].data_type == ACF_SEC_TYPE_MONITOR) {
@@ -2959,10 +3015,12 @@ static bool aw881xx_find_dde_datatype(struct aw881xx *aw881xx, struct aw881xx_co
 	struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 		(struct aw_cfg_dde_v_1_0_0_0 *)(aw_cfg->data + cfg_hdr->a_hdr_offset);
 	int dde_type = aw881xx->prof_info.prof_type;
+	const char *name = aw881xx_dde_name_filter(aw881xx, cfg_hdr, NULL);
 
 	if (dde_type == AW_DEV_TYPE_ID) {
 		for (i = 0; i < cfg_hdr->a_ddt_num; i++) {
-			if ((cfg_dde[i].data_type == data_type) &&
+			if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+				(cfg_dde[i].data_type == data_type) &&
 				(aw881xx->chipid == cfg_dde[i].chip_id) &&
 				(aw881xx->i2c->adapter->nr == cfg_dde[i].dev_bus) &&
 				(aw881xx->i2c->addr == cfg_dde[i].dev_addr) &&
@@ -2971,7 +3029,8 @@ static bool aw881xx_find_dde_datatype(struct aw881xx *aw881xx, struct aw881xx_co
 		}
 	} else if (dde_type == AW_DEV_DEFAULT_TYPE_ID) {
 		for (i = 0; i < cfg_hdr->a_ddt_num; i++) {
-			if ((cfg_dde[i].data_type == data_type) &&
+			if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+				(cfg_dde[i].data_type == data_type) &&
 				(aw881xx->chipid == cfg_dde[i].chip_id) &&
 				(aw881xx->channel == cfg_dde[i].dev_index) &&
 				(dev_profile == cfg_dde[i].dev_profile))
@@ -3036,12 +3095,27 @@ static int aw881xx_get_dde_type_info(struct aw881xx *aw881xx, struct aw881xx_con
 	int i;
 	int dev_num = 0;
 	int default_num = 0;
+	uint32_t name_num = 0;
+	const char *name = NULL;
 	struct aw_cfg_hdr *cfg_hdr = (struct aw_cfg_hdr *)aw_cfg->data;
 	struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 		(struct aw_cfg_dde_v_1_0_0_0 *)(aw_cfg->data + cfg_hdr->a_hdr_offset);
 
 	aw881xx->prof_info.prof_type = AW_DEV_NONE_TYPE_ID;
+
+	name = aw881xx_dde_name_filter(aw881xx, cfg_hdr, &name_num);
+	if (name)
+		aw_dev_info(aw881xx->dev, "%s:pid 0x%02x, use dde dev_name [%s]: %u of %u entries\n",
+			__func__, aw881xx->pid, name, name_num, cfg_hdr->a_ddt_num);
+	else
+		aw_dev_info(aw881xx->dev, "%s:pid 0x%02x, no dde named [%s], use all %u entries\n",
+			__func__, aw881xx->pid, aw881xx_get_dde_dev_name(aw881xx),
+			cfg_hdr->a_ddt_num);
+
 	for (i = 0;i < cfg_hdr->a_ddt_num; i++) {
+		if (!aw881xx_dde_name_ok(name, &cfg_dde[i]))
+			continue;
+
 		if (cfg_dde[i].type == AW_DEV_TYPE_ID)
 			dev_num++;
 
@@ -3071,9 +3145,11 @@ static int aw881xx_parse_dev_scene_count_v_1_0_0_0(struct aw881xx *aw881xx,
 	struct aw_cfg_hdr *cfg_hdr = (struct aw_cfg_hdr *)aw_cfg->data;
 		struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 			(struct aw_cfg_dde_v_1_0_0_0 *)(aw_cfg->data + cfg_hdr->a_hdr_offset);
+	const char *name = aw881xx_dde_name_filter(aw881xx, cfg_hdr, NULL);
 
 	for (i =0; i < cfg_hdr->a_ddt_num; ++i) {
-		if ((cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
+		if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+			(cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
 			(aw881xx->chipid == cfg_dde[i].chip_id) &&
 			(aw881xx->i2c->adapter->nr == cfg_dde[i].dev_bus) &&
 			(aw881xx->i2c->addr == cfg_dde[i].dev_addr)) {
@@ -3101,9 +3177,11 @@ static int aw881xx_parse_default_scene_count_v_1_0_0_0(struct aw881xx *aw881xx,
 	struct aw_cfg_hdr *cfg_hdr = (struct aw_cfg_hdr *)aw_cfg->data;
 		struct aw_cfg_dde_v_1_0_0_0 *cfg_dde =
 			(struct aw_cfg_dde_v_1_0_0_0 *)(aw_cfg->data + cfg_hdr->a_hdr_offset);
+	const char *name = aw881xx_dde_name_filter(aw881xx, cfg_hdr, NULL);
 
 	for (i =0; i < cfg_hdr->a_ddt_num; ++i) {
-		if ((cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
+		if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+			(cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
 			(aw881xx->chipid == cfg_dde[i].chip_id) &&
 			(aw881xx->channel == cfg_dde[i].dev_index)) {
 			ret = aw881xx_find_dde_datatype_info(aw881xx, aw_cfg,
@@ -3162,14 +3240,16 @@ static int aw881xx_set_dde_prof_id(struct aw881xx *aw881xx, struct aw881xx_conta
 	int prof_num = aw881xx->prof_info.count;
 	int prof_type = aw881xx->prof_info.prof_type;
 	int i, j = 0;
+	const char *name = aw881xx_dde_name_filter(aw881xx, cfg_hdr, NULL);
 
 	if (prof_type == AW_DEV_TYPE_ID) {
 		for(i = 0; i < cfg_hdr->a_ddt_num; ++i) {
-			if ((cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
+			if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+				(cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
 				(aw881xx->i2c->adapter->nr == cfg_dde[i].dev_bus) &&
 				(aw881xx->i2c->addr == cfg_dde[i].dev_addr) &&
 				(aw881xx->chipid == cfg_dde[i].chip_id)) {
-				if (j > prof_num) {
+				if (j >= prof_num) {
 					aw_dev_err(aw881xx->dev,
 						"%s:Alrealdy set prof num [%d], redundant scene [%s]exist\n",
 						__func__, prof_num, cfg_dde[i].dev_profile_str);
@@ -3183,10 +3263,11 @@ static int aw881xx_set_dde_prof_id(struct aw881xx *aw881xx, struct aw881xx_conta
 		}
 	} else if (prof_type == AW_DEV_DEFAULT_TYPE_ID) {
 		for(i = 0; i < cfg_hdr->a_ddt_num; ++i) {
-			if ((cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
+			if (aw881xx_dde_name_ok(name, &cfg_dde[i]) &&
+				(cfg_dde[i].data_type == ACF_SEC_TYPE_REG) &&
 				(aw881xx->channel == cfg_dde[i].dev_index) &&
 				(aw881xx->chipid == cfg_dde[i].chip_id)) {
-				if (j > prof_num) {
+				if (j >= prof_num) {
 					aw_dev_err(aw881xx->dev,
 						"%s:Alrealdy set prof num [%d], redundant scene [%s]exist\n",
 						__func__, prof_num, cfg_dde[i].dev_profile_str);
