@@ -92,6 +92,7 @@ static u32 mdss_fb_pseudo_palette[16] = {
 };
 
 static struct msm_mdp_interface *mdp_instance;
+static struct msm_mdp_interface *spi_mdp_instance;
 
 static int mdss_fb_register(struct msm_fb_data_type *mfd);
 static int mdss_fb_open(struct fb_info *info, int user);
@@ -276,6 +277,7 @@ static int mdss_fb_notify_update(struct msm_fb_data_type *mfd,
 }
 
 static int lcd_backlight_registered;
+static int lcd_backlight2_registered;
 
 static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 				      enum led_brightness value)
@@ -328,6 +330,14 @@ static struct led_classdev backlight_led = {
 	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
 };
 
+static struct led_classdev backlight_led2 = {
+	.name           = "lcd-backlight2",
+	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
+	.brightness_set = mdss_fb_set_bl_brightness,
+	.brightness_get = mdss_fb_get_bl_brightness,
+	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
+};
+
 static ssize_t mdss_fb_get_type(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -361,7 +371,12 @@ static ssize_t mdss_fb_get_type(struct device *dev,
 		ret = snprintf(buf, PAGE_SIZE, "edp panel\n");
 		break;
 	case SPI_PANEL:
-		ret = snprintf(buf, PAGE_SIZE, "spi panel\n");
+		/*
+		 * CAT's vendor compositor (SDM, HWHDMI rewritten for the cover)
+		 * treats the SPI cover like the stock mdss_fb2 did: a DTV port
+		 * on a pluggable framebuffer.  Report the stock-compatible type.
+		 */
+		ret = snprintf(buf, PAGE_SIZE, "dtv panel\n");
 		break;
 	default:
 		ret = snprintf(buf, PAGE_SIZE, "unknown panel\n");
@@ -933,6 +948,18 @@ static DEVICE_ATTR(msm_fb_persist_mode, 0644,
 	mdss_fb_get_persist_mode, mdss_fb_change_persist_mode);
 static DEVICE_ATTR(idle_power_collapse, 0444, mdss_fb_idle_pc_notify, NULL);
 
+/*
+ * The vendor compositor picks the external display as the first fb node with
+ * is_pluggable=1 whose "connected" node reads non-zero (HWDevice::GetFBNodeIndex).
+ * The cover is soldered, so it is always connected.
+ */
+static ssize_t mdss_fb_get_connected(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "1\n");
+}
+static DEVICE_ATTR(connected, 0444, mdss_fb_get_connected, NULL);
+
 static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
 	&dev_attr_msm_fb_split.attr,
@@ -961,6 +988,13 @@ static int mdss_fb_create_sysfs(struct msm_fb_data_type *mfd)
 	rc = sysfs_create_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 	if (rc)
 		pr_err("sysfs group creation failed, rc=%d\n", rc);
+
+	if (!rc && mfd->panel.type == SPI_PANEL) {
+		rc = sysfs_create_file(&mfd->fbi->dev->kobj,
+				&dev_attr_connected.attr);
+		if (rc)
+			pr_err("connected sysfs creation failed, rc=%d\n", rc);
+	}
 	return rc;
 }
 
@@ -1240,10 +1274,12 @@ static int mdss_fb_init_panel_modes(struct msm_fb_data_type *mfd,
 static int mdss_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = NULL;
+	struct msm_mdp_interface *panel_mdp;
 	struct mdss_panel_data *pdata;
 	struct fb_info *fbi;
 	int rc;
 	const char *data;
+	u32 dt_index;
 
 	if (fbi_list_index >= MAX_FBI_LIST)
 		return -ENOMEM;
@@ -1252,9 +1288,21 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -EPROBE_DEFER;
 
-	if (!mdp_instance) {
+	/* The CAT vendor compositor expects the SPI cover at fb2.  Its DT node
+	 * declares cell-index=2; wait until fb0 and the writeback fb1 exist. */
+	if (pdata->panel_info.type == SPI_PANEL &&
+		!of_property_read_u32(pdev->dev.of_node, "cell-index", &dt_index)) {
+		if (fbi_list_index < dt_index)
+			return -EPROBE_DEFER;
+		if (fbi_list_index != dt_index)
+			return -EINVAL;
+	}
+
+	panel_mdp = pdata->panel_info.type == SPI_PANEL ?
+		spi_mdp_instance : mdp_instance;
+	if (!panel_mdp) {
 		pr_err("mdss mdp resource not initialized yet\n");
-		return -ENODEV;
+		return -EPROBE_DEFER;
 	}
 
 	/*
@@ -1278,7 +1326,9 @@ static int mdss_fb_probe(struct platform_device *pdev)
 
 	mfd->ext_ad_ctrl = -1;
 	if (mfd->panel_info && mfd->panel_info->brightness_max > 0)
-		MDSS_BRIGHT_TO_BL(mfd->bl_level, backlight_led.brightness,
+		MDSS_BRIGHT_TO_BL(mfd->bl_level,
+		mfd->panel.type == SPI_PANEL ? backlight_led2.brightness :
+		backlight_led.brightness,
 		mfd->panel_info->bl_max, mfd->panel_info->brightness_max);
 	else
 		mfd->bl_level = 0;
@@ -1293,8 +1343,12 @@ static int mdss_fb_probe(struct platform_device *pdev)
 
 	mfd->pdev = pdev;
 
-	if (mfd->panel.type == SPI_PANEL)
-		mfd->fb_imgType = MDP_RGB_565;
+	/*
+	 * Keep the default RGBA8888 framebuffer for the SPI cover.  The CAT
+	 * compositor memcpy()s its GPU-composed RGBA8888 client target into
+	 * the mmap()ed fb2 (stock fb2 was 32 bpp); the SPI display code
+	 * converts to RGB565 when it pushes the frame to the panel.
+	 */
 
 	if (mfd->panel.type == MIPI_VIDEO_PANEL || mfd->panel.type ==
 		MIPI_CMD_PANEL || mfd->panel.type == SPI_PANEL){
@@ -1316,7 +1370,7 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	pr_info("fb%d: split_mode:%d left:%d right:%d\n", mfd->index,
 		mfd->split_mode, mfd->split_fb_left, mfd->split_fb_right);
 
-	mfd->mdp = *mdp_instance;
+	mfd->mdp = *panel_mdp;
 
 	rc = of_property_read_bool(pdev->dev.of_node,
 		"qcom,boot-indication-enabled");
@@ -1358,7 +1412,14 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	pm_runtime_enable(mfd->fbi->dev);
 
 	/* android supports only one lcd-backlight/lcd for now */
-	if (!lcd_backlight_registered) {
+	if (mfd->panel.type == SPI_PANEL && !lcd_backlight2_registered) {
+		backlight_led2.brightness = mfd->panel_info->brightness_max;
+		backlight_led2.max_brightness = mfd->panel_info->brightness_max;
+		if (led_classdev_register(&pdev->dev, &backlight_led2))
+			pr_err("lcd-backlight2 registration failed\n");
+		else
+			lcd_backlight2_registered = 1;
+	} else if (mfd->panel.type != SPI_PANEL && !lcd_backlight_registered) {
 		backlight_led.brightness = mfd->panel_info->brightness_max;
 		backlight_led.max_brightness = mfd->panel_info->brightness_max;
 		if (led_classdev_register(&pdev->dev, &backlight_led))
@@ -1460,7 +1521,10 @@ static int mdss_fb_remove(struct platform_device *pdev)
 	/* remove /dev/fb* */
 	unregister_framebuffer(mfd->fbi);
 
-	if (lcd_backlight_registered) {
+	if (mfd->panel.type == SPI_PANEL && lcd_backlight2_registered) {
+		lcd_backlight2_registered = 0;
+		led_classdev_unregister(&backlight_led2);
+	} else if (mfd->panel.type != SPI_PANEL && lcd_backlight_registered) {
 		lcd_backlight_registered = 0;
 		led_classdev_unregister(&backlight_led);
 	}
@@ -1660,6 +1724,7 @@ static const struct dev_pm_ops mdss_fb_pm_ops = {
 
 static const struct of_device_id mdss_fb_dt_match[] = {
 	{ .compatible = "qcom,mdss-fb",},
+	{ .compatible = "qcom,mdss-fb2",},
 	{}
 };
 EXPORT_COMPAT("qcom,mdss-fb");
@@ -2284,6 +2349,14 @@ int mdss_fb_alloc_fb_ion_memory(struct msm_fb_data_type *mfd, size_t fb_size)
 			goto err_detach;
 		}
 	} else if (mfd->panel.type == SPI_PANEL) {
+		/* fbmem_buf was never set on this branch: mmap() of the SPI
+		 * fb hit a NULL dma_buf in dma_buf_attach(). */
+		mfd->fbmem_buf = ion_share_dma_buf(mfd->fb_ion_client,
+							mfd->fb_ion_handle);
+		if (IS_ERR(mfd->fbmem_buf)) {
+			rc = PTR_ERR(mfd->fbmem_buf);
+			goto fb_mmap_failed;
+		}
 		mfd->fb_attachment = dma_buf_attach(mfd->fbmem_buf,
 				&mfd->pdev->dev);
 		if (IS_ERR(mfd->fb_attachment)) {
@@ -5063,6 +5136,7 @@ int mdss_register_panel(struct platform_device *pdev,
 	struct mdss_panel_data *pdata)
 {
 	struct platform_device *fb_pdev, *mdss_pdev;
+	struct msm_mdp_interface *panel_mdp;
 	struct device_node *node = NULL;
 	int rc = 0;
 	bool master_panel = true;
@@ -5072,7 +5146,9 @@ int mdss_register_panel(struct platform_device *pdev,
 		return -ENODEV;
 	}
 
-	if (!mdp_instance) {
+	panel_mdp = pdata->panel_info.type == SPI_PANEL ?
+		spi_mdp_instance : mdp_instance;
+	if (!panel_mdp) {
 		pr_err("mdss mdp resource not initialized yet\n");
 		return -EPROBE_DEFER;
 	}
@@ -5110,8 +5186,8 @@ int mdss_register_panel(struct platform_device *pdev,
 			fb_pdev->dev.platform_data = pdata;
 	}
 
-	if (master_panel && mdp_instance->panel_register_done)
-		mdp_instance->panel_register_done(pdata);
+	if (master_panel && panel_mdp->panel_register_done)
+		panel_mdp->panel_register_done(pdata);
 
 mdss_notfound:
 	of_node_put(node);
@@ -5130,6 +5206,17 @@ int mdss_fb_register_mdp_instance(struct msm_mdp_interface *mdp)
 	return 0;
 }
 EXPORT_SYMBOL(mdss_fb_register_mdp_instance);
+
+int mdss_fb_register_spi_mdp_instance(struct msm_mdp_interface *mdp)
+{
+	if (spi_mdp_instance == mdp)
+		return 0;
+	if (spi_mdp_instance)
+		return -EINVAL;
+	spi_mdp_instance = mdp;
+	return 0;
+}
+EXPORT_SYMBOL(mdss_fb_register_spi_mdp_instance);
 
 int mdss_fb_get_phys_info(dma_addr_t *start, unsigned long *len, int fb_num)
 {

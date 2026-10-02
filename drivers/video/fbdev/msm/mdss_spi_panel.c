@@ -29,6 +29,22 @@
 #endif
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
+/* Hall reports 1=open, 0=closed on the S22.  Keep the panel state separate
+ * from the main display and gate only the cover backlight on an open lid. */
+static int s22_cover_lid_open = 1;
+static u32 s22_cover_requested_bl = 255;
+static int s22_cover_bl_gpio = -EINVAL;
+
+void mdss_spi_get_hall_state(int state)
+{
+	WRITE_ONCE(s22_cover_lid_open, !!state);
+	if (gpio_is_valid(s22_cover_bl_gpio))
+		gpio_set_value_cansleep(s22_cover_bl_gpio, !state);
+	if (bl_led_trigger)
+		led_trigger_event(bl_led_trigger,
+			state ? 0 : READ_ONCE(s22_cover_requested_bl));
+}
+EXPORT_SYMBOL(mdss_spi_get_hall_state);
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
 {
 	struct spi_panel_data *ctrl_pdata = NULL;
@@ -59,16 +75,22 @@ int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
 	pinfo = &(ctrl_pdata->panel_data.panel_info);
 
 	if (enable) {
-		rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
-		if (rc) {
-			pr_err("display reset gpio request failed\n");
-			return rc;
+		if (!ctrl_pdata->rst_gpio_owned) {
+			rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
+			if (rc) {
+				pr_err("display reset gpio request failed: %d\n", rc);
+				return rc;
+			}
+			ctrl_pdata->rst_gpio_owned = true;
 		}
 
-		rc = gpio_request(ctrl_pdata->disp_dc_gpio, "disp_dc");
-		if (rc) {
-			pr_err("display dc gpio request failed\n");
-			return rc;
+		if (!ctrl_pdata->dc_gpio_owned) {
+			rc = gpio_request(ctrl_pdata->disp_dc_gpio, "disp_dc");
+			if (rc) {
+				pr_err("display dc gpio request failed: %d\n", rc);
+				return rc;
+			}
+			ctrl_pdata->dc_gpio_owned = true;
 		}
 
 		if (!pinfo->cont_splash_enabled) {
@@ -88,11 +110,17 @@ int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			pr_err("%s: Reset panel done\n", __func__);
 		}
 	} else {
-		gpio_direction_output((ctrl_pdata->rst_gpio), 0);
-		gpio_free(ctrl_pdata->rst_gpio);
+		if (ctrl_pdata->rst_gpio_owned) {
+			gpio_direction_output(ctrl_pdata->rst_gpio, 0);
+			gpio_free(ctrl_pdata->rst_gpio);
+			ctrl_pdata->rst_gpio_owned = false;
+		}
 
-		gpio_direction_output(ctrl_pdata->disp_dc_gpio, 0);
-		gpio_free(ctrl_pdata->disp_dc_gpio);
+		if (ctrl_pdata->dc_gpio_owned) {
+			gpio_direction_output(ctrl_pdata->disp_dc_gpio, 0);
+			gpio_free(ctrl_pdata->disp_dc_gpio);
+			ctrl_pdata->dc_gpio_owned = false;
+		}
 	}
 	if (pinfo->cont_splash_enabled)
 		pinfo->cont_splash_enabled = false;
@@ -1112,6 +1140,9 @@ static int mdss_spi_panel_parse_dt(struct device_node *np,
 	pinfo->bpp = (!rc ? tmp : 16);
 
 	pinfo->pdest = DISPLAY_1;
+	/* Exposed as is_pluggable=1 in msm_fb_panel_info: the vendor
+	 * compositor only considers pluggable nodes for the external display. */
+	pinfo->is_pluggable = true;
 
 	ctrl_pdata->bklt_ctrl = SPI_UNKNOWN_CTRL;
 	data = of_get_property(np, "qcom,mdss-spi-bl-pmic-control-type", NULL);
@@ -1292,6 +1323,9 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 
 	if ((bl_level < pdata->panel_info.bl_min) && (bl_level != 0))
 		bl_level = pdata->panel_info.bl_min;
+	WRITE_ONCE(s22_cover_requested_bl, bl_level);
+	if (READ_ONCE(s22_cover_lid_open))
+		bl_level = 0;
 
 	switch (ctrl_pdata->bklt_ctrl) {
 	case SPI_BL_WLED:
@@ -1481,6 +1515,8 @@ static irqreturn_t spi_panel_te_handler(int irq, void *data)
 	struct spi_panel_data *ctrl_pdata = (struct spi_panel_data *)data;
 	ktime_t vsync_time;
 	static int te_count;
+
+	ctrl_pdata->te_seen = true;
 	complete(&ctrl_pdata->spi_panel_te);
 
 	if (ctrl_pdata->vsync_enable && (++te_count ==
@@ -1525,6 +1561,10 @@ static struct device_node *mdss_spi_pref_prim_panel(
 					__func__, __LINE__);
 	spi_pan_node = of_parse_phandle(pdev->dev.of_node,
 					"qcom,spi-pref-prim-pan", 0);
+	/* CAT's v30 DT uses the older DSI-named phandle for this SPI panel. */
+	if (!spi_pan_node)
+		spi_pan_node = of_parse_phandle(pdev->dev.of_node,
+					"qcom,dsi-pref-prim-pan", 0);
 	if (!spi_pan_node)
 		pr_err("%s:can't find panel phandle\n", __func__);
 
@@ -1584,6 +1624,18 @@ static int spi_panel_device_register(struct device_node *pan_node,
 		pr_err("%s:%d, reset gpio not specified\n",
 						__func__, __LINE__);
 
+	s22_cover_bl_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+			"qcom,mdss-spi-blk-gpio", 0);
+	if (gpio_is_valid(s22_cover_bl_gpio)) {
+		rc = devm_gpio_request_one(&ctrl_pdev->dev, s22_cover_bl_gpio,
+			READ_ONCE(s22_cover_lid_open) ? GPIOF_OUT_INIT_LOW :
+			GPIOF_OUT_INIT_HIGH, "s22-cover-backlight");
+		if (rc) {
+			pr_warn("cover backlight GPIO unavailable: %d\n", rc);
+			s22_cover_bl_gpio = -EINVAL;
+		}
+	}
+
 	ctrl_pdata->panel_data.event_handler = mdss_spi_panel_event_handler;
 
 	if (ctrl_pdata->bklt_ctrl == SPI_BL_PWM)
@@ -1607,6 +1659,11 @@ static int spi_panel_device_register(struct device_node *pan_node,
 		pinfo->panel_power_state = MDSS_PANEL_POWER_OFF;
 	}
 
+	/* CAT's panel node has no compatible property, so there is no separate
+	 * spi_display platform device. Register its interface from the panel. */
+	rc = mdss_spi_display_register();
+	if (rc)
+		return rc;
 	rc = mdss_register_panel(ctrl_pdev, &(ctrl_pdata->panel_data));
 	if (rc) {
 		pr_err("%s: unable to register SPI panel\n", __func__);
@@ -1714,6 +1771,7 @@ static int mdss_spi_panel_probe(struct platform_device *pdev)
 	spi_pan_node = mdss_spi_pref_prim_panel(pdev);
 	if (!spi_pan_node) {
 		pr_err("%s: can't find panel node %s\n", __func__, panel_cfg);
+		rc = -ENODEV;
 		goto error_pan_node;
 	}
 
@@ -1747,6 +1805,9 @@ static int mdss_spi_panel_probe(struct platform_device *pdev)
 		pr_err("TE request_irq failed.\n");
 		goto error_te_request;
 	}
+	/* enable_spi_panel_te_irq() counts from "disabled"; request_irq
+	 * leaves the line enabled, which triggered "Unbalanced enable". */
+	disable_irq(gpio_to_irq(ctrl_pdata->disp_te_gpio));
 
 	pr_debug("%s: spi panel  initialized\n", __func__);
 	return 0;

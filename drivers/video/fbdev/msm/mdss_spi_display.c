@@ -22,6 +22,7 @@
 #include <linux/dma-buf.h>
 
 #include "mdss_panel.h"
+#include "mdss_fb.h"
 #include "mdss_spi_panel.h"
 #include "mdss_spi_client.h"
 #include "mdss_mdp.h"
@@ -309,6 +310,7 @@ int mdss_spi_display_pre_commit(struct msm_fb_data_type *mfd,
 	temp_buf = ctrl_pdata->front_buf;
 	ctrl_pdata->front_buf = ctrl_pdata->back_buf;
 	ctrl_pdata->back_buf = temp_buf;
+	ctrl_pdata->layer_commit_pending = true;
 	__handle_buffer_fences(mfd, commit, commit->input_layers);
 
 	return 0;
@@ -338,6 +340,55 @@ int mdss_spi_display_atomic_validate(struct msm_fb_data_type *mfd,
 	return 0;
 }
 
+/*
+ * CAT's vendor compositor drives the cover the way the stock OEM mdss_fb2
+ * driver expected: it mmap()s the framebuffer, writes the GPU-composed
+ * RGBA8888 frame into one of the two pages and pans with FBIOPUT_VSCREENINFO.
+ * Convert that page into the panel's RGB565 back buffer, exactly like the
+ * stock mdss_spi_panel_kickoff did (R from byte 0, G byte 1, B byte 2).
+ */
+static int mdss_spi_display_fb_to_back_buf(struct msm_fb_data_type *mfd,
+	struct spi_panel_data *ctrl_pdata, u32 yoffset)
+{
+	struct fb_info *fbi = mfd->fbi;
+	u32 xres = ctrl_pdata->panel_data.panel_info.xres;
+	u32 yres = ctrl_pdata->panel_data.panel_info.yres;
+	u32 stride = fbi->fix.line_length;
+	u32 bpp = fbi->var.bits_per_pixel;
+	const u8 *src;
+	u16 *dst = (u16 *)ctrl_pdata->back_buf;
+	u32 x, y;
+
+	if (!fbi->screen_base || !dst)
+		return -ENOMEM;
+	if (bpp != 32 && bpp != 16)
+		return -EINVAL;
+	if (yoffset > fbi->var.yres_virtual - yres)
+		return -EINVAL;
+	if ((u64)(yoffset + yres) * stride > fbi->fix.smem_len)
+		return -EINVAL;
+	if (xres * (bpp / 8) > stride ||
+		(u64)xres * yres * 2 > ctrl_pdata->byte_per_frame)
+		return -EINVAL;
+
+	src = (const u8 *)fbi->screen_base + yoffset * stride;
+	for (y = 0; y < yres; y++) {
+		const u8 *row = src + y * stride;
+
+		if (bpp == 16) {
+			memcpy(dst, row, xres * 2);
+		} else {
+			for (x = 0; x < xres; x++, row += 4)
+				dst[x] = ((row[0] & 0xf8) << 8) |
+					 ((row[1] & 0xfc) << 3) |
+					 (row[2] >> 3);
+		}
+		dst += xres;
+	}
+
+	return 0;
+}
+
 int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 			struct mdp_display_commit *data)
 {
@@ -351,6 +402,26 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
+	if (!ctrl_pdata->layer_commit_pending) {
+		u32 yoffset = data ? data->var.yoffset : mfd->fbi->var.yoffset;
+		char *temp_buf;
+
+		/* the previous async transfer still owns front_buf */
+		if (!mdss_spi_wait_tx_done(ctrl_pdata))
+			pr_err_ratelimited("SPI transfer timeout before fb copy\n");
+
+		rc = mdss_spi_display_fb_to_back_buf(mfd, ctrl_pdata, yoffset);
+		if (rc) {
+			pr_err_ratelimited("fb%d: no frame to send (%d)\n",
+				mfd->index, rc);
+			return rc;
+		}
+		temp_buf = ctrl_pdata->front_buf;
+		ctrl_pdata->front_buf = ctrl_pdata->back_buf;
+		ctrl_pdata->back_buf = temp_buf;
+	}
+	ctrl_pdata->layer_commit_pending = false;
+
 	mdss_spi_display_notify(ctrl_pdata, MDP_NOTIFY_FRAME_BEGIN);
 
 	enable_spi_panel_te_irq(ctrl_pdata, true);
@@ -358,12 +429,16 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 	reinit_completion(&ctrl_pdata->spi_panel_te);
 	atomic_inc(&ctrl_pdata->koff_cnt);
 
-	rc = wait_for_completion_timeout(&ctrl_pdata->spi_panel_te,
+	/*
+	 * The S22 cover's init sequence never enables TE (no 0x35 command),
+	 * so the stock driver sent frames without waiting.  Only wait when
+	 * the panel has actually pulsed TE at least once.
+	 */
+	if (ctrl_pdata->te_seen) {
+		rc = wait_for_completion_timeout(&ctrl_pdata->spi_panel_te,
 				msecs_to_jiffies(SPI_PANEL_TE_TIMEOUT));
-	if (rc == 0) {
-		pr_err("wait panel TE time out\n");
-		mutex_unlock(&ctrl_pdata->spi_tx_mutex);
-		return rc;
+		if (rc == 0)
+			pr_err_ratelimited("wait panel TE time out, sending anyway\n");
 	}
 #ifndef TARGET_HW_MDSS_MDP3
 	rc = mdss_spi_tx_pixel(ctrl_pdata->front_buf,
@@ -376,6 +451,12 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 	enable_spi_panel_te_irq(ctrl_pdata, false);
 
 	return rc;
+}
+
+/* Plain FBIOPAN_DISPLAY / FBIOPUT_VSCREENINFO path (no overlay flags). */
+static void mdss_spi_display_dma(struct msm_fb_data_type *mfd)
+{
+	mdss_spi_display_kickoff(mfd, NULL);
 }
 
 static int spi_display_get_metadata(struct msm_fb_data_type *mfd,
@@ -635,6 +716,7 @@ int mdss_spi_overlay_init(struct msm_fb_data_type *mfd)
 
 	spi_display_interface->ioctl_handler = spi_display_ioctl_handler;
 	spi_display_interface->kickoff_fnc = mdss_spi_display_kickoff;
+	spi_display_interface->dma_fnc = mdss_spi_display_dma;
 	spi_display_interface->pre_commit = mdss_spi_display_pre_commit;
 	spi_display_interface->atomic_validate =
 				mdss_spi_display_atomic_validate;
@@ -666,14 +748,20 @@ int mdss_spi_overlay_init(struct msm_fb_data_type *mfd)
 	return rc;
 }
 
+static struct msm_mdp_interface spi_display_interface = {
+	.init_fnc = mdss_spi_overlay_init,
+	.fb_stride = mdss_spi_display_fb_stride,
+};
+
+int mdss_spi_display_register(void)
+{
+	return mdss_fb_register_spi_mdp_instance(&spi_display_interface);
+}
+
 static int mdss_spi_display_probe(struct platform_device *pdev)
 {
 	int rc = 0;
 	struct mdss_data_type *mdata;
-	static struct msm_mdp_interface spi_display_interface = {
-		.init_fnc = mdss_spi_overlay_init,
-		.fb_stride = mdss_spi_display_fb_stride,
-	};
 	struct device *dev = &pdev->dev;
 
 	if (!pdev->dev.of_node) {
@@ -689,7 +777,8 @@ static int mdss_spi_display_probe(struct platform_device *pdev)
 	mdata->pdev = pdev;
 	platform_set_drvdata(pdev, mdata);
 
-	rc = mdss_fb_register_mdp_instance(&spi_display_interface);
+	/* The S22 has a DSI MDP for fb0 and an independent SPI MDP for fb2. */
+	rc = mdss_spi_display_register();
 	if (rc) {
 		pr_err("unable to register SPI display instance\n");
 		return rc;

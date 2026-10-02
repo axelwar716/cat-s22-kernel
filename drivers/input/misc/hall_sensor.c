@@ -334,6 +334,7 @@ static int hall_driver_probe(struct platform_device *dev)
 	data->sdev.state = data->state;
 
 	hall_report_lid(data, data->state);
+	mdss_spi_get_hall_state(data->state);
 
 	data->irq = gpio_to_irq(data->gpio);
 	err = devm_request_threaded_irq(&dev->dev, data->irq, NULL,

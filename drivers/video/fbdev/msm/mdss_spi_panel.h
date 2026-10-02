@@ -113,6 +113,8 @@ struct spi_panel_data {
 	int disp_te_gpio;
 	int rst_gpio;
 	int disp_dc_gpio;	/* command or data */
+	bool rst_gpio_owned;
+	bool dc_gpio_owned;
 	struct spi_panel_cmds on_cmds;
 	struct spi_panel_cmds off_cmds;
 	bool (*check_status)(struct spi_panel_data *pdata);
@@ -131,6 +133,8 @@ struct spi_panel_data {
 	int byte_per_frame;
 	char *front_buf;
 	char *back_buf;
+	bool layer_commit_pending;	/* front_buf filled by pre_commit */
+	bool te_seen;			/* panel really pulses TE */
 	wait_queue_head_t tx_done_waitq;
 	struct mutex spi_tx_mutex;
 	struct mutex te_mutex;
@@ -167,6 +171,7 @@ int mdss_spi_wait_tx_done(struct spi_panel_data *ctrl_pdata);
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable);
 int mdss_spi_panel_on(struct mdss_panel_data *pdata);
 int mdss_spi_panel_off(struct mdss_panel_data *pdata);
+int mdss_spi_display_register(void);
 
 #else
 static inline int is_spi_panel_continuous_splash_on(
