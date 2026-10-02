@@ -1116,4 +1116,11 @@ config SND_SMARTPA_AW883XX
 	  Provides aw883xx_record_dai(), imported by the CAT S22 Flip v30
 	  vendor machine driver. No aw883xx chip driver is included.
 
+config HAC_AW8155
+	bool "AWINIC AW8155 hearing-aid coil amplifier (CAT S22 Flip)"
+	depends on GPIOLIB && OF
+	help
+	  GPIO pulse control of the AW8155 amplifier that drives the HAC
+	  coil. Exports aw8155_set_en() for the vendor machine driver.
+
 endmenu

@@ -451,3 +451,4 @@ obj-$(CONFIG_SND_SOC_TFA98XX)	+= snd-soc-tfa98xx.o
 # CAT S22 Flip audio companions
 obj-$(CONFIG_SND_SMARTPA_AW881XX)	+= aw881xx/
 obj-$(CONFIG_SND_SMARTPA_AW883XX)	+= aw883xx_record.o
+obj-$(CONFIG_HAC_AW8155)		+= aw8155_hac.o
