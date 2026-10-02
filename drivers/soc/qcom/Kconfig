@@ -972,3 +972,13 @@ config BIG_CLUSTER_MIN_FREQ_ADJUST
 	  This driver is used to set the floor of the min frequency of big cluster
 	  to the user specified value when the cluster is not power collapsed. When
 	  the cluster is power collpsed it resets the value to physical limits.
+
+config QCOM_FSA4480_I2C
+	bool "Fairchild FSA4480 USB-C analog audio switch"
+	depends on I2C && POWER_SUPPLY
+	select REGMAP_I2C
+	help
+	  Driver for the FSA4480 USB Type-C analog audio switch (MIC/GND
+	  swap and SBU routing), based on the CodeAurora driver. Also
+	  provides fsa4480_get_jack_status() and fsa4480_statue(), which
+	  the CAT S22 Flip v30 vendor audio modules import.
