@@ -1,0 +1,29 @@
+#
+# Chipsemi CHSC5xxx (semi_touch) touchscreen, CAT S22 Flip port
+#
+
+config TOUCHSCREEN_SEMI_TOUCH
+	tristate "Chipsemi CHSC5xxx (semi_touch) I2C touchscreen"
+	depends on I2C && OF && FB
+	help
+	  Driver for the Chipsemi CHSC5448 capacitive touch controller used
+	  by the CAT S22 Flip (device tree node "chipsemi,chsc_cap_touch",
+	  I2C address 0x2e). The input device is named "chsc_cap_touch" and
+	  the vendor nodes are exposed under /proc/touchscreen/.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called semi_touch.
+
+config TOUCHSCREEN_SEMI_TOUCH_ONLINE_UPDATE
+	bool "Allow firmware update from a file through /proc"
+	depends on TOUCHSCREEN_SEMI_TOUCH
+	default n
+	help
+	  Writing to /proc/touchscreen/chsc_online_update makes the driver
+	  read /sdcard/chsc_auto_update_packet.bin and burn it into the
+	  controller flash. The stock S22 kernel had this enabled. It is off
+	  by default because a wrong image can brick the touch controller.
+
+	  The boot-time update path of the stock kernel (an image embedded
+	  in the kernel and burnt when the controller reports a different
+	  version) is intentionally not provided.

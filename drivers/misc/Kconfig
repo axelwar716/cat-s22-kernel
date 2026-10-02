@@ -855,6 +855,17 @@ source "drivers/misc/mic/Kconfig"
 source "drivers/misc/genwqe/Kconfig"
 source "drivers/misc/echo/Kconfig"
 source "drivers/misc/cxl/Kconfig"
+
+config USB_EXT_TYPE_C_WUSB3801
+	tristate "WillSemi WUSB3801 USB Type-C CC controller"
+	depends on I2C && POWER_SUPPLY && DUAL_ROLE_USB_INTF
+	help
+	  Driver for the WillSemi WUSB3801 Type-C configuration channel
+	  controller found on the CAT S22 Flip (I2C 0x60, "qcom,wusb3801").
+	  It reports the attached role through the dual_role_usb class
+	  ("otg_default") and forwards the advertised source current to the
+	  "usb" power supply.
+
 source "drivers/misc/fpr_FingerprintCard/Kconfig"
 endmenu
 
