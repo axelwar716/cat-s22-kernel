@@ -18,6 +18,10 @@
 #include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/gpio.h>
 #include <linux/input/matrix_keypad.h>
@@ -26,6 +30,54 @@
 #include <linux/of_gpio.h>
 #include <linux/of_platform.h>
 
+/*
+ * Debounce model (S22 Flip rework)
+ * ================================
+ *
+ * The original driver sampled the matrix exactly once, msecs_to_jiffies(
+ * debounce-delay-ms) after the first row edge, and then went back to
+ * waiting for interrupts.  With HZ=100 msecs_to_jiffies(3..10) is one
+ * jiffy, so that single sample lands at the next 10 ms tick plus the
+ * system_wq latency, whatever the DT asked for.  Hence:
+ *
+ *  - a contact bounce that happens to be open at the sampling instant is
+ *    reported as a release, and the re-close edge as a new press (phantom
+ *    DOWN/UP pairs);
+ *  - a press and release that both happen before that sample are never
+ *    seen at all (lost taps).
+ *
+ * This version keeps the vendor matrix read (double read per row with
+ * column direction switch, and the "all five columns active" anti-ghost
+ * discard) but changes when it runs and how its result is used:
+ *
+ *  1. A row edge disables the row IRQs and samples the matrix immediately
+ *     (no jiffy delay) from a SCHED_FIFO kthread worker, so the sample is
+ *     taken close to the edge even when the CPUs are busy.
+ *  2. While any key is unconfirmed (raw sample != reported state), or
+ *     shortly after an edge, the matrix is re-sampled every
+ *     settle_period_us using an hrtimer (real sub-ms resolution,
+ *     independent of HZ).
+ *  3. A key changes its reported state only after its raw level has been
+ *     identical in every sample for at least debounce_us (per-key stable
+ *     state debounce).  A raw level change restarts that key's timer.
+ *  4. While keys are held and confirmed, the matrix is re-sampled every
+ *     hold_period_ms so that releases and presses on a row that is already
+ *     asserted are seen without relying on edges.
+ *  5. Once nothing is pressed and everything is confirmed, all columns are
+ *     re-activated and the row IRQs are enabled again.
+ *
+ * Optional DT properties (defaults used when absent):
+ *   debounce-delay-ms         stable time required for a change (stock)
+ *   bullitt,settle-period-us  sampling period while settling  (1000)
+ *   bullitt,rescan-period-ms  sampling period while keys held (5)
+ */
+#define MATRIX_KEYPAD_SETTLE_US_DEFAULT	1000
+#define MATRIX_KEYPAD_SETTLE_US_MIN	250
+#define MATRIX_KEYPAD_SETTLE_US_MAX	10000
+#define MATRIX_KEYPAD_HOLD_MS_DEFAULT	5
+#define MATRIX_KEYPAD_HOLD_MS_MAX	50
+#define MATRIX_KEYPAD_DEBOUNCE_MS_MAX	100
+
 struct matrix_keypad {
 	const struct matrix_keypad_platform_data *pdata;
 	struct input_dev *input_dev;
@@ -33,11 +85,26 @@ struct matrix_keypad {
 
 	DECLARE_BITMAP(disabled_gpios, MATRIX_MAX_ROWS);
 
+	/* debounced (reported) state, one bit per row for each column */
 	uint32_t last_key_state[MATRIX_MAX_COLS];
-	struct delayed_work work;
+	/* last raw sample, same layout */
+	uint32_t raw_key_state[MATRIX_MAX_COLS];
+	/* time of the last raw level change, per key (row * ncols + col) */
+	ktime_t *raw_since;
+	/* time of the last row edge (or of input open) */
+	ktime_t edge_time;
+
+	unsigned int debounce_us;
+	unsigned int settle_period_us;
+	unsigned int hold_period_us;
+
+	struct kthread_worker *worker;	/* SCHED_FIFO scan thread */
+	struct kthread_work scan_work;
+	struct hrtimer scan_timer;
 	spinlock_t lock;
-	bool scan_pending;
+	bool scan_pending;	/* polling: row IRQs are disabled */
 	bool stopped;
+	bool irqs_enabled;
 	bool gpio_all_disabled;
 };
 
@@ -84,10 +151,18 @@ static bool row_asserted(const struct matrix_keypad_platform_data *pdata,
 			!pdata->active_low : pdata->active_low;
 }
 
+/*
+ * Row IRQ enable/disable.  The irqs_enabled flag keeps the enable/disable
+ * depth balanced no matter which path (IRQ, scan end, stop, probe) gets
+ * here first.  Callers hold keypad->lock, except probe/remove.
+ */
 static void enable_row_irqs(struct matrix_keypad *keypad)
 {
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
 	int i;
+
+	if (keypad->irqs_enabled)
+		return;
 
 	if (pdata->clustered_irq > 0)
 		enable_irq(pdata->clustered_irq);
@@ -95,6 +170,7 @@ static void enable_row_irqs(struct matrix_keypad *keypad)
 		for (i = 0; i < pdata->num_row_gpios; i++)
 			enable_irq(gpio_to_irq(pdata->row_gpios[i]));
 	}
+	keypad->irqs_enabled = true;
 }
 
 static void disable_row_irqs(struct matrix_keypad *keypad)
@@ -102,31 +178,40 @@ static void disable_row_irqs(struct matrix_keypad *keypad)
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
 	int i;
 
+	if (!keypad->irqs_enabled)
+		return;
+
 	if (pdata->clustered_irq > 0)
 		disable_irq_nosync(pdata->clustered_irq);
 	else {
 		for (i = 0; i < pdata->num_row_gpios; i++)
 			disable_irq_nosync(gpio_to_irq(pdata->row_gpios[i]));
 	}
+	keypad->irqs_enabled = false;
 }
 
 /*
- * This gets the keys from keyboard and reports it to input subsystem
+ * Read the raw matrix into new_state (vendor read sequence, unchanged).
+ *
+ * For each row the column is driven active and the row is read, then the
+ * column is driven low and the row is read again: a key only counts if the
+ * row follows the column, which rejects rows that are stuck or leaking.
+ * After each column all rows are briefly driven low to discharge them.
+ *
+ * Returns false when every column reports a key (vendor anti-ghost rule:
+ * such a sample is treated as noise and must not change any key state).
+ * Leaves all columns de-activated; the caller re-activates them.
  */
-static void matrix_keypad_scan(struct work_struct *work)
+static bool matrix_keypad_read_matrix(struct matrix_keypad *keypad,
+				      uint32_t *new_state)
 {
-	struct matrix_keypad *keypad =
-		container_of(work, struct matrix_keypad, work.work);
-	struct input_dev *input_dev = keypad->input_dev;
-	const unsigned short *keycodes = input_dev->keycode;
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
-	uint32_t new_state[MATRIX_MAX_COLS];
-	int row, col, code, count_state = 0;
+	int row, col, count_state = 0;
 
 	/* de-activate all columns for scanning */
 	activate_all_cols(pdata, false);
 
-	memset(new_state, 0, sizeof(new_state));
+	memset(new_state, 0, sizeof(uint32_t) * MATRIX_MAX_COLS);
 
 	/* assert each column and read the row status out */
 	for (col = 0; col < pdata->num_col_gpios; col++) {
@@ -148,39 +233,154 @@ static void matrix_keypad_scan(struct work_struct *work)
 		}
 	}
 
-	if (count_state == 5)
-		goto out;
+	return count_state != 5;
+}
 
-	for (col = 0; col < pdata->num_col_gpios; col++) {
-		uint32_t bits_changed;
+static void matrix_keypad_arm_timer(struct matrix_keypad *keypad,
+				    unsigned int period_us)
+{
+	hrtimer_start(&keypad->scan_timer,
+		      ns_to_ktime((u64)period_us * NSEC_PER_USEC),
+		      HRTIMER_MODE_REL);
+}
 
-		bits_changed = keypad->last_key_state[col] ^ new_state[col];
-		if (bits_changed == 0)
-			continue;
+enum matrix_keypad_key_result {
+	MKP_KEY_STABLE,		/* reported state == raw state */
+	MKP_KEY_SETTLING,	/* differs, not stable long enough yet */
+	MKP_KEY_REPORTED,	/* change confirmed and reported */
+};
 
-		for (row = 0; row < pdata->num_row_gpios; row++) {
-			if ((bits_changed & (1 << row)) == 0)
-				continue;
+/*
+ * Per-key stable-state debounce.  'raw' is the bit of this key in the new
+ * sample (0 or 1 << row).  A raw level change restarts the key's timer; a
+ * difference from the reported state is only reported once the raw level
+ * has been unchanged for at least debounce_us.
+ */
+static enum matrix_keypad_key_result
+matrix_keypad_update_key(struct matrix_keypad *keypad, int row, int col,
+			 uint32_t raw, ktime_t now)
+{
+	const unsigned short *keycodes = keypad->input_dev->keycode;
+	ktime_t *since = &keypad->raw_since[row * keypad->pdata->num_col_gpios +
+					    col];
+	uint32_t bit = 1U << row;
+	int code;
 
-			code = MATRIX_SCAN_CODE(row, col, keypad->row_shift);
-			input_event(input_dev, EV_MSC, MSC_SCAN, code);
-			input_report_key(input_dev,
-					 keycodes[code],
-					 new_state[col] & (1 << row));
-		}
+	if (raw != (keypad->raw_key_state[col] & bit)) {
+		keypad->raw_key_state[col] ^= bit;
+		*since = now;
 	}
-	input_sync(input_dev);
 
-	memcpy(keypad->last_key_state, new_state, sizeof(new_state));
+	if (raw == (keypad->last_key_state[col] & bit))
+		return MKP_KEY_STABLE;
 
-out:
+	if (ktime_us_delta(now, *since) < keypad->debounce_us)
+		return MKP_KEY_SETTLING;
+
+	code = MATRIX_SCAN_CODE(row, col, keypad->row_shift);
+	input_event(keypad->input_dev, EV_MSC, MSC_SCAN, code);
+	input_report_key(keypad->input_dev, keycodes[code], raw);
+	keypad->last_key_state[col] ^= bit;
+
+	return MKP_KEY_REPORTED;
+}
+
+/*
+ * Sample the matrix, apply the per-key stable-state debounce, report
+ * confirmed changes, then either schedule the next sample or go back to
+ * interrupt mode.
+ */
+static void matrix_keypad_scan(struct kthread_work *work)
+{
+	struct matrix_keypad *keypad =
+		container_of(work, struct matrix_keypad, scan_work);
+	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
+	uint32_t new_state[MATRIX_MAX_COLS];
+	bool valid, settling = false, held = false, reported = false;
+	unsigned int period_us = 0;
+	ktime_t now;
+	int row, col;
+
+	valid = matrix_keypad_read_matrix(keypad, new_state);
+	now = ktime_get();
+
+	/* idle level between samples: all columns active, as in IRQ mode */
 	activate_all_cols(pdata, true);
 
-	/* Enable IRQs again */
+	if (valid) {
+		for (col = 0; col < pdata->num_col_gpios; col++) {
+			if (new_state[col])
+				held = true;
+
+			for (row = 0; row < pdata->num_row_gpios; row++) {
+				uint32_t raw = new_state[col] & (1U << row);
+				enum matrix_keypad_key_result res;
+
+				res = matrix_keypad_update_key(keypad, row, col,
+							       raw, now);
+				switch (res) {
+				case MKP_KEY_SETTLING:
+					settling = true;
+					break;
+				case MKP_KEY_REPORTED:
+					reported = true;
+					break;
+				default:
+					break;
+				}
+			}
+		}
+		if (reported)
+			input_sync(keypad->input_dev);
+	} else {
+		/*
+		 * Anti-ghost discard: this sample says nothing reliable.
+		 * Keep the current states and timers and look again.
+		 */
+		settling = true;
+	}
+
+	/*
+	 * Keep sampling quickly for a while after an edge even if this
+	 * sample happened to catch an open bounce: a short tap whose first
+	 * sample missed the contact is still seen by the next ones.
+	 */
+	if (ktime_us_delta(now, keypad->edge_time) <
+	    keypad->debounce_us + 2 * keypad->settle_period_us)
+		settling = true;
+
+	if (settling)
+		period_us = keypad->settle_period_us;
+	else if (held)
+		period_us = keypad->hold_period_us;
+
 	spin_lock_irq(&keypad->lock);
-	keypad->scan_pending = false;
-	enable_row_irqs(keypad);
+	if (keypad->stopped) {
+		/* matrix_keypad_stop() finishes the shutdown */
+	} else if (period_us) {
+		matrix_keypad_arm_timer(keypad, period_us);
+	} else {
+		/*
+		 * Everything released and confirmed: back to interrupt mode.
+		 * An edge that happened while the IRQs were disabled is
+		 * replayed on enable (lazy disable + resend) and simply
+		 * starts a new scan.
+		 */
+		keypad->scan_pending = false;
+		enable_row_irqs(keypad);
+	}
 	spin_unlock_irq(&keypad->lock);
+}
+
+static enum hrtimer_restart matrix_keypad_timer(struct hrtimer *timer)
+{
+	struct matrix_keypad *keypad =
+		container_of(timer, struct matrix_keypad, scan_timer);
+
+	/* GPIO accesses may sleep (cansleep API): scan in process context */
+	kthread_queue_work(keypad->worker, &keypad->scan_work);
+
+	return HRTIMER_NORESTART;
 }
 
 static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
@@ -200,8 +400,9 @@ static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
 
 	disable_row_irqs(keypad);
 	keypad->scan_pending = true;
-	schedule_delayed_work(&keypad->work,
-		msecs_to_jiffies(keypad->pdata->debounce_ms));
+	keypad->edge_time = ktime_get();
+	/* sample right away; the debounce is done by repeated samples */
+	kthread_queue_work(keypad->worker, &keypad->scan_work);
 
 out:
 	spin_unlock_irqrestore(&keypad->lock, flags);
@@ -212,14 +413,18 @@ static int matrix_keypad_start(struct input_dev *dev)
 {
 	struct matrix_keypad *keypad = input_get_drvdata(dev);
 
+	spin_lock_irq(&keypad->lock);
 	keypad->stopped = false;
-	mb();
+	keypad->scan_pending = true;
+	keypad->edge_time = ktime_get();
+	spin_unlock_irq(&keypad->lock);
 
 	/*
 	 * Schedule an immediate key scan to capture current key state;
-	 * columns will be activated and IRQs be enabled after the scan.
+	 * columns will be activated and IRQs be enabled once the state
+	 * is confirmed and nothing is pressed.
 	 */
-	schedule_delayed_work(&keypad->work, 0);
+	kthread_queue_work(keypad->worker, &keypad->scan_work);
 
 	return 0;
 }
@@ -232,12 +437,25 @@ static void matrix_keypad_stop(struct input_dev *dev)
 	keypad->stopped = true;
 	spin_unlock_irq(&keypad->lock);
 
-	flush_delayed_work(&keypad->work);
 	/*
-	 * matrix_keypad_scan() will leave IRQs enabled;
-	 * we should disable them now.
+	 * After 'stopped' is set neither the IRQ handler nor the scan work
+	 * arms anything new.  Kill a pending timer first (its callback may
+	 * queue the work), then the work itself.
 	 */
+	hrtimer_cancel(&keypad->scan_timer);
+	kthread_cancel_work_sync(&keypad->scan_work);
+
+	/*
+	 * Leave the matrix as the stock driver did after a scan: all columns
+	 * active (so a key press pulls its row and can wake the system) and
+	 * the row IRQs disabled (wake IRQs are armed by suspend).
+	 */
+	activate_all_cols(keypad->pdata, true);
+
+	spin_lock_irq(&keypad->lock);
 	disable_row_irqs(keypad);
+	keypad->scan_pending = false;
+	spin_unlock_irq(&keypad->lock);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -373,6 +591,7 @@ static int matrix_keypad_init_gpio(struct platform_device *pdev,
 	}
 
 	/* initialized as disabled - enabled by input->open */
+	keypad->irqs_enabled = true;
 	disable_row_irqs(keypad);
 	return 0;
 
@@ -490,9 +709,45 @@ matrix_keypad_parse_dt(struct device *dev)
 }
 #endif
 
+/*
+ * Debounce/scan timing.  debounce-delay-ms keeps its stock meaning (how
+ * long a change must be stable) but is now applied with hrtimer
+ * resolution instead of being rounded to jiffies.
+ */
+static void matrix_keypad_parse_timing(struct device *dev,
+				       struct matrix_keypad *keypad)
+{
+	unsigned int debounce_ms = keypad->pdata->debounce_ms;
+	u32 settle_us = MATRIX_KEYPAD_SETTLE_US_DEFAULT;
+	u32 hold_ms = MATRIX_KEYPAD_HOLD_MS_DEFAULT;
+
+#ifdef CONFIG_OF
+	if (dev->of_node) {
+		of_property_read_u32(dev->of_node, "bullitt,settle-period-us",
+				     &settle_us);
+		of_property_read_u32(dev->of_node, "bullitt,rescan-period-ms",
+				     &hold_ms);
+	}
+#endif
+
+	debounce_ms = min_t(unsigned int, debounce_ms,
+			    MATRIX_KEYPAD_DEBOUNCE_MS_MAX);
+	settle_us = clamp_t(u32, settle_us, MATRIX_KEYPAD_SETTLE_US_MIN,
+			    MATRIX_KEYPAD_SETTLE_US_MAX);
+	hold_ms = clamp_t(u32, hold_ms, 1, MATRIX_KEYPAD_HOLD_MS_MAX);
+
+	keypad->debounce_us = debounce_ms * USEC_PER_MSEC;
+	keypad->settle_period_us = settle_us;
+	keypad->hold_period_us = hold_ms * USEC_PER_MSEC;
+
+	dev_info(dev, "debounce %u ms, settle period %u us, hold period %u ms\n",
+		 debounce_ms, settle_us, hold_ms);
+}
+
 static int matrix_keypad_probe(struct platform_device *pdev)
 {
 	const struct matrix_keypad_platform_data *pdata;
+	struct sched_param param = { .sched_priority = MAX_USER_RT_PRIO / 2 };
 	struct matrix_keypad *keypad;
 	struct input_dev *input_dev;
 	int err;
@@ -517,8 +772,32 @@ static int matrix_keypad_probe(struct platform_device *pdev)
 	keypad->pdata = pdata;
 	keypad->row_shift = get_count_order(pdata->num_col_gpios);
 	keypad->stopped = true;
-	INIT_DELAYED_WORK(&keypad->work, matrix_keypad_scan);
+	kthread_init_work(&keypad->scan_work, matrix_keypad_scan);
+	hrtimer_init(&keypad->scan_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	keypad->scan_timer.function = matrix_keypad_timer;
 	spin_lock_init(&keypad->lock);
+
+	keypad->raw_since = kcalloc(pdata->num_row_gpios *
+				    pdata->num_col_gpios,
+				    sizeof(*keypad->raw_since), GFP_KERNEL);
+	if (!keypad->raw_since) {
+		err = -ENOMEM;
+		goto err_free_mem;
+	}
+	matrix_keypad_parse_timing(&pdev->dev, keypad);
+
+	/*
+	 * The scan runs on its own SCHED_FIFO thread (same class as threaded
+	 * IRQ handlers) so that the first sample after an edge is not delayed
+	 * by UI load; a press that ends before it is sampled is lost.
+	 */
+	keypad->worker = kthread_create_worker(0, "matrix_keypad");
+	if (IS_ERR(keypad->worker)) {
+		err = PTR_ERR(keypad->worker);
+		keypad->worker = NULL;
+		goto err_free_mem;
+	}
+	sched_setscheduler_nocheck(keypad->worker->task, SCHED_FIFO, &param);
 
 	input_dev->name		= pdata->name ? : pdev->name;
 	input_dev->id.bustype	= BUS_HOST;
@@ -557,6 +836,11 @@ err_free_gpio:
 	matrix_keypad_free_gpio(keypad);
 err_free_mem:
 	input_free_device(input_dev);
+	if (keypad) {
+		if (keypad->worker)
+			kthread_destroy_worker(keypad->worker);
+		kfree(keypad->raw_since);
+	}
 	kfree(keypad);
 	return err;
 }
@@ -567,8 +851,13 @@ static int matrix_keypad_remove(struct platform_device *pdev)
 
 	device_init_wakeup(&pdev->dev, 0);
 
-	matrix_keypad_free_gpio(keypad);
+	/* unregister first: close() stops the timer and the scan work */
 	input_unregister_device(keypad->input_dev);
+	hrtimer_cancel(&keypad->scan_timer);
+	kthread_cancel_work_sync(&keypad->scan_work);
+	matrix_keypad_free_gpio(keypad);
+	kthread_destroy_worker(keypad->worker);
+	kfree(keypad->raw_since);
 	kfree(keypad);
 
 	return 0;
