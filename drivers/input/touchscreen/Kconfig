@@ -1434,6 +1434,8 @@ config TOUCHSCREEN_HIMAX_CHIPSET
 
 source "drivers/input/touchscreen/hxchipset/Kconfig"
 
+source "drivers/input/touchscreen/semi_touch/Kconfig"
+
 config TOUCHSCREEN_EKTF3XXX_CHIPSET
 	bool "Elan EKTF3XXX touchpanel CHIPSET"
 	depends on I2C
