@@ -705,6 +705,14 @@ config LEDS_QPNP_WLED
 	  variable brightness.  It also supports outputting the Avdd supply for
 	  AMOLED displays.
 
+config LEDS_MSM_GPIO_KEYBOARD_LIGHT
+	tristate "GPIO keypad backlight (qcom,leds-gpio-keyboard_light)"
+	depends on LEDS_CLASS && OF_GPIO
+	help
+	  On/off keypad backlight driven by one GPIO, as on the CAT S22 Flip
+	  (/sys/class/leds/keyboard_light). The stock S22 kernel includes this
+	  driver even though its config lists this symbol as not set.
+
 config LEDS_MSM_GPIO_FLASH
 	tristate "Support for GPIO Flash LEDs"
 	help
