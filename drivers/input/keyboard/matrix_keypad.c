@@ -212,7 +212,6 @@ static void disable_row_irqs(struct matrix_keypad *keypad)
  * For each row the column is driven active and the row is read, then the
  * column is driven low and the row is read again: a key only counts if the
  * row follows the column, which rejects rows that are stuck or leaking.
- * After each column all rows are briefly driven low to discharge them.
  *
  * Returns false when every column reports a key (vendor anti-ghost rule:
  * such a sample is treated as noise and must not change any key state).
@@ -243,10 +242,14 @@ static bool matrix_keypad_read_matrix(struct matrix_keypad *keypad,
 		if (new_state[col])
 			count_state++;
 		activate_col(pdata, col, false);
-		for (row = 0; row < pdata->num_row_gpios; row++) {
-			gpio_direction_output(pdata->row_gpios[row], 0);
-			gpio_direction_input(pdata->row_gpios[row]);
-		}
+		/*
+		 * The vendor code drove every row low here to discharge it.
+		 * The rows are requested as IRQs, so gpiolib refuses
+		 * (FLAG_USED_AS_IRQ: -EIO plus one error line per row) and
+		 * the line never changed; with 1 ms rescans that flooded the
+		 * kernel log (thousands of lines per second while typing).
+		 * Dropped: no electrical change.
+		 */
 	}
 
 	return count_state != 5;
