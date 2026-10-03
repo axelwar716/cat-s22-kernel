@@ -58,8 +58,13 @@
  *     settle_period_us using an hrtimer (real sub-ms resolution,
  *     independent of HZ).
  *  3. A key changes its reported state only after its raw level has been
- *     identical in every sample for at least debounce_us (per-key stable
- *     state debounce).  A raw level change restarts that key's timer.
+ *     identical in every sample for a direction dependent time (per-key
+ *     stable state debounce with hysteresis); any raw level change
+ *     restarts that key's timer:
+ *       - press:   closed continuously for press_us   (make bounce filter)
+ *       - release: open continuously for release_us   (mid-press openings)
+ *     Each is max(debounce-delay-ms, its own period), so the stock
+ *     debounce-delay-ms (3 ms in the S22 DTBO) can only lengthen them.
  *  4. While keys are held and confirmed, the matrix is re-sampled every
  *     hold_period_ms so that releases and presses on a row that is already
  *     asserted are seen without relying on edges.
@@ -67,7 +72,9 @@
  *     re-activated and the row IRQs are enabled again.
  *
  * Optional DT properties (defaults used when absent):
- *   debounce-delay-ms         stable time required for a change (stock)
+ *   debounce-delay-ms         minimum stable time for any change (stock)
+ *   bullitt,press-period-ms   stable closed time before DOWN (25)
+ *   bullitt,release-period-ms stable open time before UP     (30)
  *   bullitt,settle-period-us  sampling period while settling  (1000)
  *   bullitt,rescan-period-ms  sampling period while keys held (5)
  */
@@ -77,6 +84,13 @@
 #define MATRIX_KEYPAD_HOLD_MS_DEFAULT	5
 #define MATRIX_KEYPAD_HOLD_MS_MAX	50
 #define MATRIX_KEYPAD_DEBOUNCE_MS_MAX	100
+/*
+ * Measured on the S22 Flip dome contacts: make bounces of 11-18 ms closed
+ * followed by 9-18 ms open before the real contact, and openings of
+ * 4-22 ms in the middle of a 100-170 ms press.
+ */
+#define MATRIX_KEYPAD_PRESS_MS_DEFAULT	25
+#define MATRIX_KEYPAD_RELEASE_MS_DEFAULT	30
 
 struct matrix_keypad {
 	const struct matrix_keypad_platform_data *pdata;
@@ -94,7 +108,9 @@ struct matrix_keypad {
 	/* time of the last row edge (or of input open) */
 	ktime_t edge_time;
 
-	unsigned int debounce_us;
+	unsigned int press_us;		/* closed time before DOWN */
+	unsigned int release_us;	/* open time before UP */
+	unsigned int settle_window_us;	/* fast sampling after an edge */
 	unsigned int settle_period_us;
 	unsigned int hold_period_us;
 
@@ -251,10 +267,11 @@ enum matrix_keypad_key_result {
 };
 
 /*
- * Per-key stable-state debounce.  'raw' is the bit of this key in the new
- * sample (0 or 1 << row).  A raw level change restarts the key's timer; a
- * difference from the reported state is only reported once the raw level
- * has been unchanged for at least debounce_us.
+ * Per-key stable-state debounce with hysteresis.  'raw' is the bit of this
+ * key in the new sample (0 or 1 << row).  A raw level change restarts the
+ * key's timer; a difference from the reported state is only reported once
+ * the raw level has been unchanged for press_us (raw closed, DOWN) or
+ * release_us (raw open, UP).
  */
 static enum matrix_keypad_key_result
 matrix_keypad_update_key(struct matrix_keypad *keypad, int row, int col,
@@ -274,7 +291,8 @@ matrix_keypad_update_key(struct matrix_keypad *keypad, int row, int col,
 	if (raw == (keypad->last_key_state[col] & bit))
 		return MKP_KEY_STABLE;
 
-	if (ktime_us_delta(now, *since) < keypad->debounce_us)
+	if (ktime_us_delta(now, *since) <
+	    (raw ? keypad->press_us : keypad->release_us))
 		return MKP_KEY_SETTLING;
 
 	code = MATRIX_SCAN_CODE(row, col, keypad->row_shift);
@@ -345,8 +363,7 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	 * sample happened to catch an open bounce: a short tap whose first
 	 * sample missed the contact is still seen by the next ones.
 	 */
-	if (ktime_us_delta(now, keypad->edge_time) <
-	    keypad->debounce_us + 2 * keypad->settle_period_us)
+	if (ktime_us_delta(now, keypad->edge_time) < keypad->settle_window_us)
 		settling = true;
 
 	if (settling)
@@ -712,7 +729,9 @@ matrix_keypad_parse_dt(struct device *dev)
 /*
  * Debounce/scan timing.  debounce-delay-ms keeps its stock meaning (how
  * long a change must be stable) but is now applied with hrtimer
- * resolution instead of being rounded to jiffies.
+ * resolution instead of being rounded to jiffies; it is a floor for the
+ * press and release periods, which default to values measured on the S22
+ * so that the stock DTBO (debounce-delay-ms = 3) needs no change.
  */
 static void matrix_keypad_parse_timing(struct device *dev,
 				       struct matrix_keypad *keypad)
@@ -720,6 +739,8 @@ static void matrix_keypad_parse_timing(struct device *dev,
 	unsigned int debounce_ms = keypad->pdata->debounce_ms;
 	u32 settle_us = MATRIX_KEYPAD_SETTLE_US_DEFAULT;
 	u32 hold_ms = MATRIX_KEYPAD_HOLD_MS_DEFAULT;
+	u32 press_ms = MATRIX_KEYPAD_PRESS_MS_DEFAULT;
+	u32 release_ms = MATRIX_KEYPAD_RELEASE_MS_DEFAULT;
 
 #ifdef CONFIG_OF
 	if (dev->of_node) {
@@ -727,6 +748,10 @@ static void matrix_keypad_parse_timing(struct device *dev,
 				     &settle_us);
 		of_property_read_u32(dev->of_node, "bullitt,rescan-period-ms",
 				     &hold_ms);
+		of_property_read_u32(dev->of_node, "bullitt,press-period-ms",
+				     &press_ms);
+		of_property_read_u32(dev->of_node, "bullitt,release-period-ms",
+				     &release_ms);
 	}
 #endif
 
@@ -735,13 +760,20 @@ static void matrix_keypad_parse_timing(struct device *dev,
 	settle_us = clamp_t(u32, settle_us, MATRIX_KEYPAD_SETTLE_US_MIN,
 			    MATRIX_KEYPAD_SETTLE_US_MAX);
 	hold_ms = clamp_t(u32, hold_ms, 1, MATRIX_KEYPAD_HOLD_MS_MAX);
+	press_ms = clamp_t(u32, press_ms, debounce_ms,
+			   MATRIX_KEYPAD_DEBOUNCE_MS_MAX);
+	release_ms = clamp_t(u32, release_ms, debounce_ms,
+			     MATRIX_KEYPAD_DEBOUNCE_MS_MAX);
 
-	keypad->debounce_us = debounce_ms * USEC_PER_MSEC;
+	keypad->press_us = press_ms * USEC_PER_MSEC;
+	keypad->release_us = release_ms * USEC_PER_MSEC;
+	keypad->settle_window_us = max(keypad->press_us, keypad->release_us) +
+				   2 * settle_us;
 	keypad->settle_period_us = settle_us;
 	keypad->hold_period_us = hold_ms * USEC_PER_MSEC;
 
-	dev_info(dev, "debounce %u ms, settle period %u us, hold period %u ms\n",
-		 debounce_ms, settle_us, hold_ms);
+	dev_info(dev, "debounce %u ms, press %u ms, release %u ms, settle period %u us, hold period %u ms\n",
+		 debounce_ms, press_ms, release_ms, settle_us, hold_ms);
 }
 
 static int matrix_keypad_probe(struct platform_device *pdev)
