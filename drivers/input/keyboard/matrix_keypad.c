@@ -57,23 +57,41 @@
  *     shortly after an edge, the matrix is re-sampled every
  *     settle_period_us using an hrtimer (real sub-ms resolution,
  *     independent of HZ).
- *  3. A key changes its reported state only after its raw level has been
- *     identical in every sample for a direction dependent time (per-key
- *     stable state debounce with hysteresis); any raw level change
- *     restarts that key's timer:
- *       - press:   closed continuously for press_us   (make bounce filter)
- *       - release: open continuously for release_us   (mid-press openings)
+ *  3. Per-key press/release rules (v14):
+ *       - press:   DOWN once the key has been closed for press_us in
+ *                  total within one contact burst.  Openings shorter
+ *                  than release_us do not end the burst, so a light or
+ *                  bouncy tap whose closed pieces are each shorter than
+ *                  press_us still counts, and a make bounce plus the
+ *                  real contact is still ONE press.  (v8-v13 required
+ *                  press_us *continuously* closed: light taps were lost,
+ *                  03-10 20:34 and 20:41, row IRQ seen and no DOWN.)
+ *       - release: UP once open continuously for release_us (mid-press
+ *                  openings of 4-22 ms are not releases).
+ *       - a burst that opens for release_us without reaching press_us
+ *         is dropped (counted in the rejected_taps parameter).
  *     Each is max(debounce-delay-ms, its own period), so the stock
  *     debounce-delay-ms (3 ms in the S22 DTBO) can only lengthen them.
  *  4. While keys are held and confirmed, the matrix is re-sampled every
  *     hold_period_ms so that releases and presses on a row that is already
  *     asserted are seen without relying on edges.
  *  5. Once nothing is pressed and everything is confirmed, all columns are
- *     re-activated and the row IRQs are enabled again.
+ *     re-activated and the row IRQs are enabled again (idle costs nothing:
+ *     no polling).  Right after the re-arm the rows are read once more; a
+ *     contact that started between the last sample and the re-arm starts
+ *     a new scan instead of depending on the dual-edge emulation of
+ *     pinctrl-msm.  Desk test: polling at a fixed period after typing
+ *     instead of re-arming the IRQs loses more light taps (the IRQ sees
+ *     the very first edge, a poll only the next sample).
+ *
+ * Runtime tuning (0 = DT/default):
+ *   /sys/module/matrix_keypad/parameters/press_ms
+ *   /sys/module/matrix_keypad/parameters/release_ms
+ * Counters (read only): rejected_taps, rearm_rescans.
  *
  * Optional DT properties (defaults used when absent):
  *   debounce-delay-ms         minimum stable time for any change (stock)
- *   bullitt,press-period-ms   stable closed time before DOWN (25)
+ *   bullitt,press-period-ms   total closed time before DOWN  (6)
  *   bullitt,release-period-ms stable open time before UP     (30)
  *   bullitt,settle-period-us  sampling period while settling  (1000)
  *   bullitt,rescan-period-ms  sampling period while keys held (5)
@@ -87,10 +105,29 @@
 /*
  * Measured on the S22 Flip dome contacts: make bounces of 11-18 ms closed
  * followed by 9-18 ms open before the real contact, and openings of
- * 4-22 ms in the middle of a 100-170 ms press.
+ * 4-22 ms in the middle of a 100-170 ms press.  The release hysteresis
+ * merges both into one press; the press threshold only rejects contacts
+ * shorter than 6 ms in total (desk test tools/keypad-v14-accum-test.py:
+ * 0 lost / 0 phantom on the 03-10 captures, 0/2000 lost light taps).
  */
-#define MATRIX_KEYPAD_PRESS_MS_DEFAULT	25
+#define MATRIX_KEYPAD_PRESS_MS_DEFAULT	6
 #define MATRIX_KEYPAD_RELEASE_MS_DEFAULT	30
+
+static unsigned int param_press_ms;
+module_param_named(press_ms, param_press_ms, uint, 0644);
+MODULE_PARM_DESC(press_ms, "total closed time before DOWN, ms (0 = DT/default)");
+
+static unsigned int param_release_ms;
+module_param_named(release_ms, param_release_ms, uint, 0644);
+MODULE_PARM_DESC(release_ms, "continuous open time before UP, ms (0 = DT/default)");
+
+static unsigned int rejected_taps;
+module_param(rejected_taps, uint, 0444);
+MODULE_PARM_DESC(rejected_taps, "contact bursts shorter than press_ms");
+
+static unsigned int rearm_rescans;
+module_param(rearm_rescans, uint, 0444);
+MODULE_PARM_DESC(rearm_rescans, "scans started by the row check after the IRQ re-arm");
 
 struct matrix_keypad {
 	const struct matrix_keypad_platform_data *pdata;
@@ -105,12 +142,15 @@ struct matrix_keypad {
 	uint32_t raw_key_state[MATRIX_MAX_COLS];
 	/* time of the last raw level change, per key (row * ncols + col) */
 	ktime_t *raw_since;
+	/* closed time in the current contact burst, per key, us */
+	u32 *press_acc;
+	/* time of the last valid sample */
+	ktime_t last_scan;
 	/* time of the last row edge (or of input open) */
 	ktime_t edge_time;
 
-	unsigned int press_us;		/* closed time before DOWN */
+	unsigned int press_us;		/* total closed time before DOWN */
 	unsigned int release_us;	/* open time before UP */
-	unsigned int settle_window_us;	/* fast sampling after an edge */
 	unsigned int settle_period_us;
 	unsigned int hold_period_us;
 
@@ -122,6 +162,7 @@ struct matrix_keypad {
 	bool stopped;
 	bool irqs_enabled;
 	bool gpio_all_disabled;
+	bool rearm_rescan;	/* last scan was started by the re-arm check */
 };
 
 /*
@@ -165,6 +206,17 @@ static bool row_asserted(const struct matrix_keypad_platform_data *pdata,
 {
 	return gpio_get_value_cansleep(pdata->row_gpios[row]) ?
 			!pdata->active_low : pdata->active_low;
+}
+
+static bool any_row_asserted(const struct matrix_keypad_platform_data *pdata)
+{
+	int row;
+
+	for (row = 0; row < pdata->num_row_gpios; row++)
+		if (row_asserted(pdata, row))
+			return true;
+
+	return false;
 }
 
 /*
@@ -270,19 +322,19 @@ enum matrix_keypad_key_result {
 };
 
 /*
- * Per-key stable-state debounce with hysteresis.  'raw' is the bit of this
- * key in the new sample (0 or 1 << row).  A raw level change restarts the
- * key's timer; a difference from the reported state is only reported once
- * the raw level has been unchanged for press_us (raw closed, DOWN) or
- * release_us (raw open, UP).
+ * Per-key press/release rules (see the top of the file).  'raw' is the bit
+ * of this key in the new sample (0 or 1 << row), dt_us the time since the
+ * previous valid sample.
  */
 static enum matrix_keypad_key_result
 matrix_keypad_update_key(struct matrix_keypad *keypad, int row, int col,
-			 uint32_t raw, ktime_t now)
+			 uint32_t raw, ktime_t now, u32 dt_us,
+			 unsigned int press_us, unsigned int release_us)
 {
 	const unsigned short *keycodes = keypad->input_dev->keycode;
-	ktime_t *since = &keypad->raw_since[row * keypad->pdata->num_col_gpios +
-					    col];
+	unsigned int idx = row * keypad->pdata->num_col_gpios + col;
+	ktime_t *since = &keypad->raw_since[idx];
+	u32 *acc = &keypad->press_acc[idx];
 	uint32_t bit = 1U << row;
 	int code;
 
@@ -291,12 +343,28 @@ matrix_keypad_update_key(struct matrix_keypad *keypad, int row, int col,
 		*since = now;
 	}
 
-	if (raw == (keypad->last_key_state[col] & bit))
+	if (keypad->last_key_state[col] & bit) {
+		/* reported DOWN: UP after release_us open continuously */
+		if (raw)
+			return MKP_KEY_STABLE;
+		if (ktime_us_delta(now, *since) < release_us)
+			return MKP_KEY_SETTLING;
+	} else if (raw) {
+		/* reported UP, closed: DOWN once the burst adds up */
+		*acc += dt_us;
+		if (*acc < press_us)
+			return MKP_KEY_SETTLING;
+		*acc = 0;
+	} else {
+		/* reported UP, open: end of a burst that did not add up? */
+		if (!*acc)
+			return MKP_KEY_STABLE;
+		if (ktime_us_delta(now, *since) < release_us)
+			return MKP_KEY_SETTLING;
+		*acc = 0;
+		rejected_taps++;
 		return MKP_KEY_STABLE;
-
-	if (ktime_us_delta(now, *since) <
-	    (raw ? keypad->press_us : keypad->release_us))
-		return MKP_KEY_SETTLING;
+	}
 
 	code = MATRIX_SCAN_CODE(row, col, keypad->row_shift);
 	input_event(keypad->input_dev, EV_MSC, MSC_SCAN, code);
@@ -318,9 +386,18 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
 	uint32_t new_state[MATRIX_MAX_COLS];
 	bool valid, settling = false, held = false, reported = false;
-	unsigned int period_us = 0;
+	bool rearmed = false;
+	unsigned int period_us = 0, press_us, release_us, ms;
+	u32 dt_us;
 	ktime_t now;
 	int row, col;
+
+	ms = READ_ONCE(param_press_ms);
+	press_us = ms ? min_t(unsigned int, ms, MATRIX_KEYPAD_DEBOUNCE_MS_MAX) *
+			USEC_PER_MSEC : keypad->press_us;
+	ms = READ_ONCE(param_release_ms);
+	release_us = ms ? min_t(unsigned int, ms, MATRIX_KEYPAD_DEBOUNCE_MS_MAX) *
+			  USEC_PER_MSEC : keypad->release_us;
 
 	valid = matrix_keypad_read_matrix(keypad, new_state);
 	now = ktime_get();
@@ -329,6 +406,15 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	activate_all_cols(pdata, true);
 
 	if (valid) {
+		/*
+		 * Closed time credited to this sample: the time since the
+		 * previous one, capped so that the first sample of a burst
+		 * (after an idle IRQ wait) only counts as one period or two.
+		 */
+		dt_us = min_t(s64, ktime_us_delta(now, keypad->last_scan),
+			      2 * keypad->settle_period_us);
+		keypad->last_scan = now;
+
 		for (col = 0; col < pdata->num_col_gpios; col++) {
 			if (new_state[col])
 				held = true;
@@ -338,7 +424,9 @@ static void matrix_keypad_scan(struct kthread_work *work)
 				enum matrix_keypad_key_result res;
 
 				res = matrix_keypad_update_key(keypad, row, col,
-							       raw, now);
+							       raw, now, dt_us,
+							       press_us,
+							       release_us);
 				switch (res) {
 				case MKP_KEY_SETTLING:
 					settling = true;
@@ -366,8 +454,12 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	 * sample happened to catch an open bounce: a short tap whose first
 	 * sample missed the contact is still seen by the next ones.
 	 */
-	if (ktime_us_delta(now, keypad->edge_time) < keypad->settle_window_us)
+	if (ktime_us_delta(now, keypad->edge_time) <
+	    max(press_us, release_us) + 2 * keypad->settle_period_us)
 		settling = true;
+
+	if (held)
+		keypad->rearm_rescan = false;
 
 	if (settling)
 		period_us = keypad->settle_period_us;
@@ -388,6 +480,33 @@ static void matrix_keypad_scan(struct kthread_work *work)
 		 */
 		keypad->scan_pending = false;
 		enable_row_irqs(keypad);
+		rearmed = true;
+	}
+	spin_unlock_irq(&keypad->lock);
+
+	/*
+	 * Close the window between the last sample and the re-arm: with all
+	 * columns active an asserted row means a contact started in between.
+	 * Its edge should be latched and replayed, but the row IRQs are
+	 * dual-edge emulated by pinctrl-msm (polarity only follows the line
+	 * on ack), so do not rely on it.  Once per quiet re-arm: a row stuck
+	 * asserted with no key in the matrix read must not spin.
+	 */
+	if (!rearmed || keypad->rearm_rescan)
+		return;
+	if (pdata->col_scan_delay_us)
+		udelay(pdata->col_scan_delay_us);
+	if (!any_row_asserted(pdata))
+		return;
+
+	spin_lock_irq(&keypad->lock);
+	if (!keypad->scan_pending && !keypad->stopped) {
+		disable_row_irqs(keypad);
+		keypad->scan_pending = true;
+		keypad->rearm_rescan = true;
+		keypad->edge_time = ktime_get();
+		rearm_rescans++;
+		kthread_queue_work(keypad->worker, &keypad->scan_work);
 	}
 	spin_unlock_irq(&keypad->lock);
 }
@@ -420,6 +539,7 @@ static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
 
 	disable_row_irqs(keypad);
 	keypad->scan_pending = true;
+	keypad->rearm_rescan = false;
 	keypad->edge_time = ktime_get();
 	/* sample right away; the debounce is done by repeated samples */
 	kthread_queue_work(keypad->worker, &keypad->scan_work);
@@ -770,12 +890,10 @@ static void matrix_keypad_parse_timing(struct device *dev,
 
 	keypad->press_us = press_ms * USEC_PER_MSEC;
 	keypad->release_us = release_ms * USEC_PER_MSEC;
-	keypad->settle_window_us = max(keypad->press_us, keypad->release_us) +
-				   2 * settle_us;
 	keypad->settle_period_us = settle_us;
 	keypad->hold_period_us = hold_ms * USEC_PER_MSEC;
 
-	dev_info(dev, "debounce %u ms, press %u ms, release %u ms, settle period %u us, hold period %u ms\n",
+	dev_info(dev, "debounce %u ms, press %u ms (total), release %u ms, settle period %u us, hold period %u ms\n",
 		 debounce_ms, press_ms, release_ms, settle_us, hold_ms);
 }
 
@@ -815,7 +933,10 @@ static int matrix_keypad_probe(struct platform_device *pdev)
 	keypad->raw_since = kcalloc(pdata->num_row_gpios *
 				    pdata->num_col_gpios,
 				    sizeof(*keypad->raw_since), GFP_KERNEL);
-	if (!keypad->raw_since) {
+	keypad->press_acc = kcalloc(pdata->num_row_gpios *
+				    pdata->num_col_gpios,
+				    sizeof(*keypad->press_acc), GFP_KERNEL);
+	if (!keypad->raw_since || !keypad->press_acc) {
 		err = -ENOMEM;
 		goto err_free_mem;
 	}
@@ -875,6 +996,7 @@ err_free_mem:
 		if (keypad->worker)
 			kthread_destroy_worker(keypad->worker);
 		kfree(keypad->raw_since);
+		kfree(keypad->press_acc);
 	}
 	kfree(keypad);
 	return err;
@@ -893,6 +1015,7 @@ static int matrix_keypad_remove(struct platform_device *pdev)
 	matrix_keypad_free_gpio(keypad);
 	kthread_destroy_worker(keypad->worker);
 	kfree(keypad->raw_since);
+	kfree(keypad->press_acc);
 	kfree(keypad);
 
 	return 0;
