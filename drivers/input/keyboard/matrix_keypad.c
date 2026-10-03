@@ -24,6 +24,10 @@
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
+#include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/input/matrix_keypad.h>
 #include <linux/slab.h>
 #include <linux/of.h>
@@ -84,10 +88,27 @@
  *     instead of re-arming the IRQs loses more light taps (the IRQ sees
  *     the very first edge, a poll only the next sample).
  *
+ *  6. Row bias (v16).  The rows idle low through the TLMM internal
+ *     pull-down.  A dome pressed lightly has a high contact resistance
+ *     that forms a divider with that pull-down, so the row may never
+ *     cross the input threshold: no edge and no read (lost taps on the
+ *     4 and the 7 with no IRQ at all, 03-10).  row_pull selects the row
+ *     bias written straight into GPIO_CFG: 0 = none, 1 = pull-down
+ *     (stock), 2 = keeper.  With 0 or 2 nothing pulls the row low, so the
+ *     driver discharges it itself (row output low for 1 us) before every
+ *     column read and before re-arming the IRQs.  The pull-down is put
+ *     back while suspended, so a floating row cannot wake the system.
+ *     The matrix read also waits fall_us after dropping the column
+ *     before checking that the row followed it (v8-v15: no wait).
+ *
  * Runtime tuning (0 = DT/default):
  *   /sys/module/matrix_keypad/parameters/press_ms
  *   /sys/module/matrix_keypad/parameters/release_ms
- * Counters (read only): rejected_taps, rearm_rescans.
+ * Runtime tuning (raw values): row_pull (0/1/2), fall_us.
+ * Counters (read only): rejected_taps, rearm_rescans, follow_fail
+ * (row high with its column driven and still high fall_us after the
+ * column dropped), irq_no_key (row IRQ whose scan never saw a key closed;
+ * the software resend right after each re-arm is not counted).
  *
  * Optional DT properties (defaults used when absent):
  *   debounce-delay-ms         minimum stable time for any change (stock)
@@ -129,6 +150,35 @@ static unsigned int rearm_rescans;
 module_param(rearm_rescans, uint, 0444);
 MODULE_PARM_DESC(rearm_rescans, "scans started by the row check after the IRQ re-arm");
 
+/* TLMM GPIO_CFG / GPIO_IN_OUT, msm8917/msm8937 layout (pinctrl-msm89x7.c) */
+#define TLMM_GPIO_REG_SIZE	0x1000
+#define TLMM_GPIO_IO_OFFSET	0x4
+#define TLMM_CFG_PULL_MASK	0x3
+#define TLMM_CFG_OE		BIT(9)
+#define TLMM_PULL_NONE		0
+#define TLMM_PULL_DOWN		1
+#define TLMM_PULL_KEEPER	2
+
+/* an IRQ this soon after a re-arm is the software resend of a latched edge */
+#define MATRIX_KEYPAD_RESEND_US	5000
+#define MATRIX_KEYPAD_FALL_US_MAX	100
+
+static unsigned int param_row_pull = TLMM_PULL_NONE;
+module_param_named(row_pull, param_row_pull, uint, 0644);
+MODULE_PARM_DESC(row_pull, "row bias: 0 none (driver discharges the rows), 1 pull-down (stock), 2 keeper");
+
+static unsigned int param_fall_us = 5;
+module_param_named(fall_us, param_fall_us, uint, 0644);
+MODULE_PARM_DESC(fall_us, "wait after dropping a column before the row-follows check, us");
+
+static unsigned int follow_fail;
+module_param(follow_fail, uint, 0444);
+MODULE_PARM_DESC(follow_fail, "rows that rose with their column but did not fall with it");
+
+static unsigned int irq_no_key;
+module_param(irq_no_key, uint, 0444);
+MODULE_PARM_DESC(irq_no_key, "row IRQs whose scan never saw a key closed");
+
 struct matrix_keypad {
 	const struct matrix_keypad_platform_data *pdata;
 	struct input_dev *input_dev;
@@ -163,6 +213,14 @@ struct matrix_keypad {
 	bool irqs_enabled;
 	bool gpio_all_disabled;
 	bool rearm_rescan;	/* last scan was started by the re-arm check */
+
+	/* per-row TLMM registers (NULL: row bias stays as the boot left it) */
+	void __iomem **row_cfg;
+	void __iomem **row_io;
+	unsigned int row_pull;	/* bias currently written to the rows */
+	ktime_t rearm_time;	/* last switch back to interrupt mode */
+	bool irq_burst;		/* this scan sequence was started by a row IRQ */
+	bool burst_contact;	/* ... and some sample saw a key closed */
 };
 
 /*
@@ -219,6 +277,61 @@ static bool any_row_asserted(const struct matrix_keypad_platform_data *pdata)
 	return false;
 }
 
+static uint32_t read_rows(const struct matrix_keypad_platform_data *pdata)
+{
+	uint32_t rows = 0;
+	int row;
+
+	for (row = 0; row < pdata->num_row_gpios; row++)
+		if (row_asserted(pdata, row))
+			rows |= 1U << row;
+
+	return rows;
+}
+
+/*
+ * Write the row bias straight into GPIO_CFG.  The rows are requested as
+ * IRQs, so neither gpiolib nor pinctrl lets the driver touch them, and
+ * the keypad node has no pinctrl states that could rewrite them later.
+ */
+static void matrix_keypad_set_row_pull(struct matrix_keypad *keypad,
+				       unsigned int pull)
+{
+	int row;
+	u32 ctl;
+
+	if (!keypad->row_cfg || pull == keypad->row_pull)
+		return;
+
+	for (row = 0; row < keypad->pdata->num_row_gpios; row++) {
+		ctl = readl(keypad->row_cfg[row]);
+		writel((ctl & ~TLMM_CFG_PULL_MASK) | pull, keypad->row_cfg[row]);
+	}
+	keypad->row_pull = pull;
+}
+
+/*
+ * Without the pull-down a row keeps whatever charge its last contact left.
+ * Drive every row low for 1 us (OUT is kept at 0, only OE is toggled) and
+ * let it float again.  Called with the IRQs disabled: the falling edge is
+ * latched and replayed on re-arm like any other.
+ */
+static void matrix_keypad_discharge_rows(struct matrix_keypad *keypad)
+{
+	int row, nrow = keypad->pdata->num_row_gpios;
+
+	if (!keypad->row_cfg || keypad->row_pull == TLMM_PULL_DOWN)
+		return;
+
+	for (row = 0; row < nrow; row++)
+		writel(readl(keypad->row_cfg[row]) | TLMM_CFG_OE,
+		       keypad->row_cfg[row]);
+	udelay(1);
+	for (row = 0; row < nrow; row++)
+		writel(readl(keypad->row_cfg[row]) & ~TLMM_CFG_OE,
+		       keypad->row_cfg[row]);
+}
+
 /*
  * Row IRQ enable/disable.  The irqs_enabled flag keeps the enable/disable
  * depth balanced no matter which path (IRQ, scan end, stop, probe) gets
@@ -259,21 +372,25 @@ static void disable_row_irqs(struct matrix_keypad *keypad)
 }
 
 /*
- * Read the raw matrix into new_state (vendor read sequence, unchanged).
+ * Read the raw matrix into new_state (vendor read rule, one pass per
+ * column instead of one per key since v16).
  *
- * For each row the column is driven active and the row is read, then the
- * column is driven low and the row is read again: a key only counts if the
- * row follows the column, which rejects rows that are stuck or leaking.
+ * The column is driven active and the rows are read, then the column is
+ * driven low and, fall_us later, the rows are read again: a key only
+ * counts if its row follows the column, which rejects rows that are stuck
+ * or leaking.  Without the row pull-down the rows are discharged before
+ * each column, so a row can only read high if this column charged it.
  *
  * Returns false when every column reports a key (vendor anti-ghost rule:
  * such a sample is treated as noise and must not change any key state).
  * Leaves all columns de-activated; the caller re-activates them.
  */
 static bool matrix_keypad_read_matrix(struct matrix_keypad *keypad,
-				      uint32_t *new_state)
+				      uint32_t *new_state, unsigned int fall_us)
 {
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
-	int row, col, count_state = 0;
+	int col, count_state = 0;
+	uint32_t high, still_high;
 
 	/* de-activate all columns for scanning */
 	activate_all_cols(pdata, false);
@@ -282,25 +399,24 @@ static bool matrix_keypad_read_matrix(struct matrix_keypad *keypad,
 
 	/* assert each column and read the row status out */
 	for (col = 0; col < pdata->num_col_gpios; col++) {
-
-		for (row = 0; row < pdata->num_row_gpios; row++) {
-			activate_col(pdata, col, true);
-			new_state[col] |=
-				row_asserted(pdata, row) ? (1 << row) : 0;
-			gpio_direction_output(pdata->col_gpios[col], 0);
-			new_state[col] &=
-				row_asserted(pdata, row) ? ~(1 << row) : ~(0);
-		}
+		matrix_keypad_discharge_rows(keypad);
+		activate_col(pdata, col, true);
+		high = read_rows(pdata);
+		gpio_direction_output(pdata->col_gpios[col], 0);
+		if (high && fall_us)
+			udelay(fall_us);
+		still_high = high ? read_rows(pdata) : 0;
+		new_state[col] = high & ~still_high;
+		if (high & still_high)
+			follow_fail += hweight32(high & still_high);
 		if (new_state[col])
 			count_state++;
 		activate_col(pdata, col, false);
 		/*
-		 * The vendor code drove every row low here to discharge it.
-		 * The rows are requested as IRQs, so gpiolib refuses
-		 * (FLAG_USED_AS_IRQ: -EIO plus one error line per row) and
-		 * the line never changed; with 1 ms rescans that flooded the
-		 * kernel log (thousands of lines per second while typing).
-		 * Dropped: no electrical change.
+		 * The vendor code drove every row low here through gpiolib,
+		 * which refuses for IRQ lines (FLAG_USED_AS_IRQ: -EIO plus one
+		 * error line per row, a log flood with 1 ms rescans).  v16
+		 * does it through GPIO_CFG, see matrix_keypad_discharge_rows().
 		 */
 	}
 
@@ -387,7 +503,7 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	uint32_t new_state[MATRIX_MAX_COLS];
 	bool valid, settling = false, held = false, reported = false;
 	bool rearmed = false;
-	unsigned int period_us = 0, press_us, release_us, ms;
+	unsigned int period_us = 0, press_us, release_us, ms, pull;
 	u32 dt_us;
 	ktime_t now;
 	int row, col;
@@ -398,12 +514,15 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	ms = READ_ONCE(param_release_ms);
 	release_us = ms ? min_t(unsigned int, ms, MATRIX_KEYPAD_DEBOUNCE_MS_MAX) *
 			  USEC_PER_MSEC : keypad->release_us;
+	pull = READ_ONCE(param_row_pull);
+	if (pull > TLMM_PULL_KEEPER)
+		pull = TLMM_PULL_DOWN;
+	matrix_keypad_set_row_pull(keypad, pull);
 
-	valid = matrix_keypad_read_matrix(keypad, new_state);
+	valid = matrix_keypad_read_matrix(keypad, new_state,
+			min_t(unsigned int, READ_ONCE(param_fall_us),
+			      MATRIX_KEYPAD_FALL_US_MAX));
 	now = ktime_get();
-
-	/* idle level between samples: all columns active, as in IRQ mode */
-	activate_all_cols(pdata, true);
 
 	if (valid) {
 		/*
@@ -416,8 +535,10 @@ static void matrix_keypad_scan(struct kthread_work *work)
 		keypad->last_scan = now;
 
 		for (col = 0; col < pdata->num_col_gpios; col++) {
-			if (new_state[col])
+			if (new_state[col]) {
 				held = true;
+				keypad->burst_contact = true;
+			}
 
 			for (row = 0; row < pdata->num_row_gpios; row++) {
 				uint32_t raw = new_state[col] & (1U << row);
@@ -466,6 +587,15 @@ static void matrix_keypad_scan(struct kthread_work *work)
 	else if (held)
 		period_us = keypad->hold_period_us;
 
+	/*
+	 * Idle level between samples: all columns active, as in IRQ mode.
+	 * Before going back to interrupt mode a floating row must start low
+	 * (with the columns still off), or a light press has no edge to make.
+	 */
+	if (!period_us)
+		matrix_keypad_discharge_rows(keypad);
+	activate_all_cols(pdata, true);
+
 	spin_lock_irq(&keypad->lock);
 	if (keypad->stopped) {
 		/* matrix_keypad_stop() finishes the shutdown */
@@ -478,6 +608,10 @@ static void matrix_keypad_scan(struct kthread_work *work)
 		 * replayed on enable (lazy disable + resend) and simply
 		 * starts a new scan.
 		 */
+		if (keypad->irq_burst && !keypad->burst_contact)
+			irq_no_key++;
+		keypad->irq_burst = false;
+		keypad->rearm_time = ktime_get();
 		keypad->scan_pending = false;
 		enable_row_irqs(keypad);
 		rearmed = true;
@@ -541,6 +675,10 @@ static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
 	keypad->scan_pending = true;
 	keypad->rearm_rescan = false;
 	keypad->edge_time = ktime_get();
+	keypad->irq_burst = ktime_us_delta(keypad->edge_time,
+					   keypad->rearm_time) >=
+			    MATRIX_KEYPAD_RESEND_US;
+	keypad->burst_contact = false;
 	/* sample right away; the debounce is done by repeated samples */
 	kthread_queue_work(keypad->worker, &keypad->scan_work);
 
@@ -588,8 +726,11 @@ static void matrix_keypad_stop(struct input_dev *dev)
 	/*
 	 * Leave the matrix as the stock driver did after a scan: all columns
 	 * active (so a key press pulls its row and can wake the system) and
-	 * the row IRQs disabled (wake IRQs are armed by suspend).
+	 * the row IRQs disabled (wake IRQs are armed by suspend).  The rows
+	 * get the stock pull-down back: a floating wake line could leak up
+	 * and wake the system.  The next scan restores row_pull.
 	 */
+	matrix_keypad_set_row_pull(keypad, TLMM_PULL_DOWN);
 	activate_all_cols(keypad->pdata, true);
 
 	spin_lock_irq(&keypad->lock);
@@ -897,6 +1038,70 @@ static void matrix_keypad_parse_timing(struct device *dev,
 		 debounce_ms, press_ms, release_ms, settle_us, hold_ms);
 }
 
+/*
+ * Map GPIO_CFG and GPIO_IN_OUT of each row (one page per row) from the
+ * TLMM node that owns the row GPIOs.  On failure row_pull and the row
+ * discharge are disabled and the driver behaves as v15.
+ */
+static int matrix_keypad_map_rows(struct device *dev,
+				  struct matrix_keypad *keypad)
+{
+	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
+	struct device_node *np = NULL;
+	struct gpio_chip *chip = NULL;
+	struct resource res;
+	unsigned int hw;
+	int row, nrow = pdata->num_row_gpios;
+
+	keypad->row_pull = TLMM_PULL_DOWN;
+
+	for (row = 0; row < nrow; row++) {
+		struct gpio_desc *desc = gpio_to_desc(pdata->row_gpios[row]);
+		struct gpio_chip *c = desc ? gpiod_to_chip(desc) : NULL;
+
+		if (!c || (chip && c != chip))
+			return -ENODEV;
+		chip = c;
+	}
+	np = chip->of_node ? : (chip->parent ? chip->parent->of_node : NULL);
+	if (!np || of_address_to_resource(np, 0, &res))
+		return -ENODEV;
+
+	keypad->row_cfg = devm_kcalloc(dev, nrow, sizeof(void __iomem *),
+				       GFP_KERNEL);
+	keypad->row_io = devm_kcalloc(dev, nrow, sizeof(void __iomem *),
+				      GFP_KERNEL);
+	if (!keypad->row_cfg || !keypad->row_io)
+		goto fail;
+
+	for (row = 0; row < nrow; row++) {
+		hw = pdata->row_gpios[row] - chip->base;
+		if (hw >= chip->ngpio ||
+		    (u64)(hw + 1) * TLMM_GPIO_REG_SIZE > resource_size(&res))
+			goto fail;
+		keypad->row_cfg[row] = devm_ioremap(dev,
+				res.start + hw * TLMM_GPIO_REG_SIZE,
+				TLMM_GPIO_IO_OFFSET + 4);
+		if (!keypad->row_cfg[row])
+			goto fail;
+		keypad->row_io[row] = keypad->row_cfg[row] +
+				      TLMM_GPIO_IO_OFFSET;
+	}
+
+	/* OUT stays 0: the discharge only toggles OE */
+	for (row = 0; row < nrow; row++)
+		writel(0, keypad->row_io[row]);
+	keypad->row_pull = readl(keypad->row_cfg[0]) & TLMM_CFG_PULL_MASK;
+	dev_info(dev, "rows at %pa, boot row bias %u, row_pull %u, fall %u us\n",
+		 &res.start, keypad->row_pull, param_row_pull, param_fall_us);
+	return 0;
+
+fail:
+	keypad->row_cfg = NULL;
+	keypad->row_pull = TLMM_PULL_DOWN;
+	return -ENOMEM;
+}
+
 static int matrix_keypad_probe(struct platform_device *pdev)
 {
 	const struct matrix_keypad_platform_data *pdata;
@@ -941,6 +1146,10 @@ static int matrix_keypad_probe(struct platform_device *pdev)
 		goto err_free_mem;
 	}
 	matrix_keypad_parse_timing(&pdev->dev, keypad);
+	err = matrix_keypad_map_rows(&pdev->dev, keypad);
+	if (err)
+		dev_warn(&pdev->dev, "row registers not mapped (%d): row_pull disabled\n",
+			 err);
 
 	/*
 	 * The scan runs on its own SCHED_FIFO thread (same class as threaded
