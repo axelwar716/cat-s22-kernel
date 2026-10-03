@@ -29,8 +29,8 @@
 #endif
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
-/* Hall reports 1=open, 0=closed on the S22.  Keep the panel state separate
- * from the main display and gate only the cover backlight on an open lid. */
+/* Hall reports 1=open, 0=closed on the S22.  The lid state is only recorded;
+ * the cover backlight follows lcd-backlight2 regardless of the lid. */
 static int s22_cover_lid_open = 1;
 static u32 s22_cover_requested_bl = 255;
 static int s22_cover_bl_gpio = -EINVAL;
@@ -38,11 +38,7 @@ static int s22_cover_bl_gpio = -EINVAL;
 void mdss_spi_get_hall_state(int state)
 {
 	WRITE_ONCE(s22_cover_lid_open, !!state);
-	if (gpio_is_valid(s22_cover_bl_gpio))
-		gpio_set_value_cansleep(s22_cover_bl_gpio, !state);
-	if (bl_led_trigger)
-		led_trigger_event(bl_led_trigger,
-			state ? 0 : READ_ONCE(s22_cover_requested_bl));
+	pr_info("%s: lid %s\n", __func__, state ? "open" : "closed");
 }
 EXPORT_SYMBOL(mdss_spi_get_hall_state);
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
@@ -1324,8 +1320,8 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 	if ((bl_level < pdata->panel_info.bl_min) && (bl_level != 0))
 		bl_level = pdata->panel_info.bl_min;
 	WRITE_ONCE(s22_cover_requested_bl, bl_level);
-	if (READ_ONCE(s22_cover_lid_open))
-		bl_level = 0;
+	if (gpio_is_valid(s22_cover_bl_gpio))
+		gpio_set_value_cansleep(s22_cover_bl_gpio, bl_level > 0);
 
 	switch (ctrl_pdata->bklt_ctrl) {
 	case SPI_BL_WLED:
@@ -1628,7 +1624,6 @@ static int spi_panel_device_register(struct device_node *pan_node,
 			"qcom,mdss-spi-blk-gpio", 0);
 	if (gpio_is_valid(s22_cover_bl_gpio)) {
 		rc = devm_gpio_request_one(&ctrl_pdev->dev, s22_cover_bl_gpio,
-			READ_ONCE(s22_cover_lid_open) ? GPIOF_OUT_INIT_LOW :
 			GPIOF_OUT_INIT_HIGH, "s22-cover-backlight");
 		if (rc) {
 			pr_warn("cover backlight GPIO unavailable: %d\n", rc);
