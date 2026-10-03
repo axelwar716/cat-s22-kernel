@@ -95,6 +95,12 @@ void __weak mdss_spi_get_hall_state(int state)
 {
 }
 
+/* Keyboard light auto mode (leds-msm-gpio-keyboard-light); 1 = open. */
+void s22_kbd_light_lid(int open);
+void __weak s22_kbd_light_lid(int open)
+{
+}
+
 static int hall_read_state(struct hall_data *data)
 {
 	return (gpio_get_value_cansleep(data->gpio) ? 1 : 0) ^ data->active_low;
@@ -129,6 +135,7 @@ static void hall_work_func(struct work_struct *work)
 	mutex_unlock(&data->lock);
 
 	mdss_spi_get_hall_state(state);
+	s22_kbd_light_lid(state);
 }
 
 static irqreturn_t hall_interrupt_handler(int irq, void *dev)
@@ -335,6 +342,7 @@ static int hall_driver_probe(struct platform_device *dev)
 
 	hall_report_lid(data, data->state);
 	mdss_spi_get_hall_state(data->state);
+	s22_kbd_light_lid(data->state);
 
 	data->irq = gpio_to_irq(data->gpio);
 	err = devm_request_threaded_irq(&dev->dev, data->irq, NULL,
