@@ -1295,6 +1295,19 @@ static void mdss_spi_panel_bklt_pwm(struct spi_panel_data *ctrl, int level)
 static void mdss_spi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 							u32 bl_level)
 {
+	static int s22_cover_bl_gpio_level = -1;
+	int level = bl_level > 0;
+
+	/* The MDP3 commit path never reaches bl_ctrl_update() for the cover
+	 * panel, so drive the backlight GPIO here, before the deferral. */
+	if (gpio_is_valid(s22_cover_bl_gpio)) {
+		gpio_set_value_cansleep(s22_cover_bl_gpio, level);
+		if (level != s22_cover_bl_gpio_level) {
+			s22_cover_bl_gpio_level = level;
+			pr_info_ratelimited("cover backlight gpio -> %d (bl=%u)\n",
+				level, bl_level);
+		}
+	}
     /* Allow panel backlight update if secure UI is enabled */
 	if (bl_level && !mdp3_res->secure_update_bl) {
 		mdp3_res->bklt_level = bl_level;
@@ -1628,7 +1641,13 @@ static int spi_panel_device_register(struct device_node *pan_node,
 		if (rc) {
 			pr_warn("cover backlight GPIO unavailable: %d\n", rc);
 			s22_cover_bl_gpio = -EINVAL;
+		} else {
+			pr_info("cover backlight gpio %d requested\n",
+				s22_cover_bl_gpio);
 		}
+	} else {
+		pr_warn("cover backlight GPIO not in DT: %d\n",
+			s22_cover_bl_gpio);
 	}
 
 	ctrl_pdata->panel_data.event_handler = mdss_spi_panel_event_handler;
