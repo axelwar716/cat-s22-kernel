@@ -29,16 +29,46 @@
 #endif
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
-/* Hall reports 1=open, 0=closed on the S22.  The lid state is only recorded;
- * the cover backlight follows lcd-backlight2 regardless of the lid. */
+/* Hall reports 1=open, 0=closed on the S22.
+ * s22_cover_stock_off=1 replicates the stock kernel with the lid closed:
+ * PANEL_OFF skips the panel off commands (28h/10h) and the reset/dc low,
+ * but still cuts the panel regulators and selects the sleep pinctrl state;
+ * a backlight level of 0 leaves the cover backlight GPIO as it is.  On lid
+ * open the GPIO is resynced to the last requested level.
+ * s22_cover_stock_off=0 keeps the v12 behaviour (always off cmds + reset,
+ * backlight GPIO follows the requested level immediately). */
 static int s22_cover_lid_open = 1;
 static u32 s22_cover_requested_bl = 255;
 static int s22_cover_bl_gpio = -EINVAL;
+static bool s22_cover_stock_off = true;
+/* "bool" is redefined to _Bool by an included header, so module_param(...,
+ * bool, ...) does not expand; register param_ops_bool directly. */
+module_param_cb(s22_cover_stock_off, &param_ops_bool, &s22_cover_stock_off,
+		0644);
+MODULE_PARM_DESC(s22_cover_stock_off,
+	"lid closed: skip cover panel off cmds/reset and keep backlight GPIO (stock)");
+
+static bool s22_cover_stock_closed(void)
+{
+	return READ_ONCE(s22_cover_stock_off) && !READ_ONCE(s22_cover_lid_open);
+}
 
 void mdss_spi_get_hall_state(int state)
 {
+	int was_open = READ_ONCE(s22_cover_lid_open);
+
 	WRITE_ONCE(s22_cover_lid_open, !!state);
 	pr_info("%s: lid %s\n", __func__, state ? "open" : "closed");
+
+	/* Called from the hall work function (or probe): may sleep. */
+	if (state && !was_open && READ_ONCE(s22_cover_stock_off) &&
+	    gpio_is_valid(s22_cover_bl_gpio)) {
+		u32 bl = READ_ONCE(s22_cover_requested_bl);
+
+		gpio_set_value_cansleep(s22_cover_bl_gpio, bl > 0);
+		pr_info("s22_cover: lid open, backlight gpio -> %d (bl=%u)\n",
+			bl > 0, bl);
+	}
 }
 EXPORT_SYMBOL(mdss_spi_get_hall_state);
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
@@ -224,9 +254,14 @@ static int mdss_spi_panel_power_off(struct mdss_panel_data *pdata)
 		return -EINVAL;
 	ctrl_pdata = container_of(pdata, struct spi_panel_data,
 					panel_data);
-	ret = mdss_spi_panel_reset(pdata, 0);
-	if (ret)
-		pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
+	if (s22_cover_stock_closed()) {
+		pr_info("s22_cover: lid closed, keeping reset/dc lines\n");
+	} else {
+		ret = mdss_spi_panel_reset(pdata, 0);
+		if (ret)
+			pr_warn("%s: Panel reset failed. rc=%d\n",
+				__func__, ret);
+	}
 
 	if (mdss_spi_panel_pinctrl_set_state(ctrl_pdata, false))
 		pr_warn("reset disable: pinctrl not enabled\n");
@@ -298,10 +333,15 @@ static int mdss_spi_panel_power_off(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct spi_panel_data,
 				panel_data);
 
-	ret = mdss_spi_panel_reset(pdata, 0);
-	if (ret) {
-		pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
-		ret = 0;
+	if (s22_cover_stock_closed()) {
+		pr_info("s22_cover: lid closed, keeping reset/dc lines\n");
+	} else {
+		ret = mdss_spi_panel_reset(pdata, 0);
+		if (ret) {
+			pr_warn("%s: Panel reset failed. rc=%d\n",
+				__func__, ret);
+			ret = 0;
+		}
 	}
 
 	if (mdss_spi_panel_pinctrl_set_state(ctrl_pdata, false))
@@ -645,6 +685,14 @@ int mdss_spi_panel_off(struct mdss_panel_data *pdata)
 	pinfo = &pdata->panel_info;
 	ctrl = container_of(pdata, struct spi_panel_data,
 				panel_data);
+
+	/* Callers still clear CTRL_STATE_PANEL_INIT, so the next power on
+	 * does the full reset + on_cmds init (the panel loses VDD anyway). */
+	if (s22_cover_stock_closed()) {
+		pr_info("s22_cover: lid closed, skipping panel off cmds\n");
+		pinfo->blank_state = MDSS_PANEL_BLANK_BLANK;
+		return 0;
+	}
 
 	for (i = 0; i < ctrl->off_cmds.cmd_cnt; i++) {
 		/* pull down dc gpio indicate this is command */
@@ -1300,7 +1348,8 @@ static void mdss_spi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 
 	/* The MDP3 commit path never reaches bl_ctrl_update() for the cover
 	 * panel, so drive the backlight GPIO here, before the deferral. */
-	if (gpio_is_valid(s22_cover_bl_gpio)) {
+	if (gpio_is_valid(s22_cover_bl_gpio) &&
+	    !(!level && s22_cover_stock_closed())) {
 		gpio_set_value_cansleep(s22_cover_bl_gpio, level);
 		if (level != s22_cover_bl_gpio_level) {
 			s22_cover_bl_gpio_level = level;
@@ -1333,8 +1382,13 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 	if ((bl_level < pdata->panel_info.bl_min) && (bl_level != 0))
 		bl_level = pdata->panel_info.bl_min;
 	WRITE_ONCE(s22_cover_requested_bl, bl_level);
-	if (gpio_is_valid(s22_cover_bl_gpio))
-		gpio_set_value_cansleep(s22_cover_bl_gpio, bl_level > 0);
+	if (gpio_is_valid(s22_cover_bl_gpio)) {
+		if (!bl_level && s22_cover_stock_closed())
+			pr_info("s22_cover: lid closed, keeping backlight gpio\n");
+		else
+			gpio_set_value_cansleep(s22_cover_bl_gpio,
+						bl_level > 0);
+	}
 
 	switch (ctrl_pdata->bklt_ctrl) {
 	case SPI_BL_WLED:
