@@ -302,6 +302,26 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (!bl_lvl && value)
 		bl_lvl = 1;
 
+	/* S22 cover (SPI, fb2): the vendor compositor only pans fb2 and never
+	 * goes through the MDP commit that sets allow_bl_update, and fb2 may
+	 * stay blanked.  Send every lcd-backlight2 write straight to the panel
+	 * so userspace controls the cover light. */
+	if (mfd->panel.type == SPI_PANEL) {
+		struct mdss_panel_data *pdata =
+			dev_get_platdata(&mfd->pdev->dev);
+
+		if (pdata && pdata->set_backlight) {
+			mutex_lock(&mfd->bl_lock);
+			mfd->allow_bl_update = true;
+			mfd->unset_bl_level = U32_MAX;
+			pdata->set_backlight(pdata, bl_lvl);
+			mfd->bl_level = bl_lvl;
+			mfd->bl_level_scaled = bl_lvl;
+			mutex_unlock(&mfd->bl_lock);
+		}
+		return;
+	}
+
 	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
 							!mfd->bl_level)) {
 		mutex_lock(&mfd->bl_lock);
