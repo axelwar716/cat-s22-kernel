@@ -98,8 +98,11 @@
  *     driver discharges it itself (row output low for 1 us) before every
  *     column read and before re-arming the IRQs.  The pull-down is put
  *     back while suspended, so a floating row cannot wake the system.
- *     The matrix read also waits fall_us after dropping the column
+ *     The matrix read can also wait fall_us after dropping the column
  *     before checking that the row followed it (v8-v15: no wait).
+ *     v17 defaults: row_pull 0, fall_us 0 (A/B on the device 03-10: no
+ *     lost light taps on the 4/7, no ghost keys; idle row IRQs without a
+ *     key are rejected by the scan).
  *
  * Runtime tuning (0 = DT/default):
  *   /sys/module/matrix_keypad/parameters/press_ms
@@ -167,7 +170,7 @@ static unsigned int param_row_pull = TLMM_PULL_NONE;
 module_param_named(row_pull, param_row_pull, uint, 0644);
 MODULE_PARM_DESC(row_pull, "row bias: 0 none (driver discharges the rows), 1 pull-down (stock), 2 keeper");
 
-static unsigned int param_fall_us = 5;
+static unsigned int param_fall_us;
 module_param_named(fall_us, param_fall_us, uint, 0644);
 MODULE_PARM_DESC(fall_us, "wait after dropping a column before the row-follows check, us");
 
