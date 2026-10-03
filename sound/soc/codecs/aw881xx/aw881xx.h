@@ -288,6 +288,9 @@ struct aw881xx {
 	struct delayed_work start_work;
 	struct delayed_work load_fw_work;
 	struct list_head list_node;
+
+	bool dsp_started;	/* a device_start succeeded since boot */
+	bool dsp_pid_checked;	/* dde set checked against the DSP PID */
 };
 
 /******************************************************

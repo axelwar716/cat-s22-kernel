@@ -116,7 +116,9 @@ static aw_snd_soc_codec_t *aw_get_codec(struct snd_soc_dai *dai)
 
 static void aw881xx_reg_container_update(struct aw881xx *aw881xx,
 				uint8_t *data, uint32_t len);
-static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en);
+static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en,
+				bool check_pid);
+static int aw881xx_dde_select_by_dsp_pid(struct aw881xx *aw881xx);
 
 
 
@@ -1198,7 +1200,7 @@ static int aw881xx_dsp_check_process(struct aw881xx *aw881xx)
 			if (i == (AW881XX_DSP_CHECK_MAX - 1))
 				break;
 
-			ret = aw881xx_fw_update(aw881xx, true);
+			ret = aw881xx_fw_update(aw881xx, true, true);
 			if (ret < 0) {
 				aw_dev_err(aw881xx->dev, "%s:fw update failed\n",
 					__func__);
@@ -1389,7 +1391,15 @@ static int aw881xx_dsp_cfg_update(struct aw881xx *aw881xx,
 	return 0;
 }
 
-static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en)
+/*
+ * Load the selected profile: registers, then (optionally) DSP firmware and
+ * DSP config.  check_pid: before the first successful start, read the DSP
+ * PID with the chip powered and clocked and make sure the ACF data set
+ * matches it, as the vendor V1.8.0.2 driver did (see
+ * aw881xx_dde_select_by_dsp_pid()); only meaningful while I2S is running.
+ */
+static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en,
+				bool check_pid)
 {
 	int ret = -EINVAL;
 	struct aw_prof_desc *set_prof_desc = NULL;
@@ -1402,6 +1412,7 @@ static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en)
 		return -EPERM;
 	}
 
+reload:
 	prof_name = aw881xx_get_profile_name(aw881xx, aw881xx->set_prof);
 	if (prof_name == NULL)
 		return -ENOMEM;
@@ -1418,6 +1429,18 @@ static int aw881xx_fw_update(struct aw881xx *aw881xx, bool up_dsp_fw_en)
 	if (ret < 0) {
 		aw_dev_err(aw881xx->dev, "%s:update reg failed\n", __func__);
 		return ret;
+	}
+
+	if (check_pid && !aw881xx->dsp_pid_checked) {
+		/* the register profile just powered the chip up */
+		ret = aw881xx_dde_select_by_dsp_pid(aw881xx);
+		if (ret < 0)
+			return ret;
+		if (ret > 0) {
+			/* other data set: its registers first, as the stock */
+			check_pid = false;
+			goto reload;
+		}
 	}
 
 	aw881xx_run_mute(aw881xx, true);
@@ -1505,6 +1528,7 @@ static int aw881xx_device_start(struct aw881xx *aw881xx)
 	aw881xx_monitor_start(&aw881xx->monitor);
 
 	aw881xx->status = AW881XX_PW_ON;
+	aw881xx->dsp_started = true;
 
 	aw_dev_info(aw881xx->dev, "%s: done\n", __func__);
 
@@ -1603,11 +1627,20 @@ static void aw881xx_start(struct aw881xx *aw881xx)
 		if (aw881xx->status == AW881XX_PW_ON)
 			return;
 
-		if (aw881xx->cur_prof == aw881xx->set_prof) {
+		/*
+		 * Until the DSP has been started once, reload registers, DSP
+		 * firmware and config with the I2S clock running, like the
+		 * vendor V1.8.0.2 driver: the copy loaded by device_init at
+		 * boot is written with no I2S/PLL clock and before the DSP PID
+		 * could be read, so it is not trusted.
+		 */
+		if ((aw881xx->cur_prof == aw881xx->set_prof) &&
+		    aw881xx->dsp_started) {
 			aw881xx_phase_sync(aw881xx, aw881xx->pa_syn_en);
 			aw_dev_info(aw881xx->dev, "%s: profile not change\n", __func__);
 		} else {
-			ret = aw881xx_fw_update(aw881xx, false);
+			ret = aw881xx_fw_update(aw881xx,
+						!aw881xx->dsp_started, true);
 			if (ret < 0) {
 				aw_dev_err(aw881xx->dev, "%s:fw update failed\n", __func__);
 				return;
@@ -1689,7 +1722,7 @@ static int aw881xx_prof_update(struct aw881xx *aw881xx)
 	if (aw881xx->status == AW881XX_PW_ON)
 		aw881xx_stop(aw881xx);
 
-	ret = aw881xx_fw_update(aw881xx, false);
+	ret = aw881xx_fw_update(aw881xx, false, false);
 	if (ret < 0) {
 		aw_dev_err(aw881xx->dev, "%s:fw update failed\n", __func__);
 		return ret;
@@ -1989,7 +2022,7 @@ static int aw881xx_switch_set(struct snd_kcontrol *kcontrol,
 				aw881xx->allow_pw = true;
 
 				if (aw881xx->cur_prof != aw881xx->set_prof) {
-					ret = aw881xx_fw_update(aw881xx, false);
+					ret = aw881xx_fw_update(aw881xx, false, false);
 					if (ret < 0) {
 						aw_dev_err(aw881xx->dev, "%s:fw update failed\n", __func__);
 						mutex_unlock(&aw881xx->lock);
@@ -3421,6 +3454,78 @@ void aw881xx_device_deinit(struct aw881xx *aw881xx)
 	aw881xx->prof_info.count = 0;
 }
 
+/*
+ * The vendor V1.8.0.2 driver chose between the two ACF data sets
+ * ("aw88194" / "aw88194A") in aw881xx_fw_update, on every start until the
+ * first successful one: register profile written (chip powered), I2S PLL
+ * check, then DSP PID read from DSP memory 0x1F80 (0x0000 -> "aw88194",
+ * 0x6E90 -> "aw88194A").  The DSP memory can only be read with the chip
+ * powered and clocked, so the PID cannot be known when the ACF is parsed at
+ * boot; the set parsed there follows the register product id.  Do the
+ * vendor check here and re-parse the ACF for the other set if needed.
+ *
+ * Returns 1 if the data set changed (profile data must be re-fetched), 0 if
+ * not or if the PID could not be read (kept as is, retried on the next
+ * start), negative on a fatal re-parse error.
+ */
+static int aw881xx_dde_select_by_dsp_pid(struct aw881xx *aw881xx)
+{
+	struct aw_cfg_hdr *cfg_hdr;
+	const char *old_name = aw881xx_get_dde_dev_name(aw881xx);
+	const char *new_name;
+	uint8_t old_pid = aw881xx->pid;
+	uint32_t num = 0;
+	int ret;
+
+	/* same checks as syspll_check, without its power down on failure */
+	if (aw881xx_mode1_pll_check(aw881xx) < 0 &&
+	    aw881xx_mode2_pll_check(aw881xx) < 0) {
+		aw_dev_info(aw881xx->dev, "%s: no i2s clock, dsp pid not read\n",
+			__func__);
+		return 0;
+	}
+
+	ret = aw881xx_read_dsp_pid(aw881xx);
+	if (ret < 0) {
+		aw881xx->pid = old_pid;
+		return 0;
+	}
+	aw881xx->dsp_pid_checked = true;
+
+	new_name = aw881xx_get_dde_dev_name(aw881xx);
+	aw_dev_info(aw881xx->dev, "%s: dsp pid -> 0x%02x, dde set [%s]\n",
+		__func__, aw881xx->pid, new_name);
+	if (!strcmp(old_name, new_name) || g_awinic_cfg == NULL)
+		return 0;
+
+	cfg_hdr = (struct aw_cfg_hdr *)g_awinic_cfg->data;
+	if (cfg_hdr->a_hdr_version != AW_CFG_HDR_VER_1_0_0_0 ||
+	    aw881xx_dde_name_filter(aw881xx, cfg_hdr, &num) == NULL) {
+		aw_dev_info(aw881xx->dev, "%s: no dde named [%s], keep [%s]\n",
+			__func__, new_name, old_name);
+		return 0;
+	}
+
+	/*
+	 * Only the entries of the new set get parsed (and byte-swapped in
+	 * place) here; those of the old set are not touched again.  This
+	 * runs at most once per boot (dsp_pid_checked).
+	 */
+	aw_dev_info(aw881xx->dev, "%s: re-parse acf: [%s] -> [%s]\n",
+		__func__, old_name, new_name);
+	aw881xx_device_deinit(aw881xx);
+	ret = aw881xx_cfg_load(aw881xx, g_awinic_cfg);
+	if (ret < 0) {
+		aw881xx->fw_status = AW881XX_FW_FAILED;
+		aw_dev_err(aw881xx->dev, "%s: re-parse acf failed\n", __func__);
+		return ret;
+	}
+	aw881xx->cur_prof = aw881xx->prof_info.prof_desc[0].id;
+	aw881xx->set_prof = aw881xx->prof_info.prof_desc[0].id;
+
+	return 1;
+}
+
 int aw881xx_device_init(struct aw881xx *aw881xx, struct aw881xx_container *aw_cfg)
 {
 	int ret = -EINVAL;
@@ -3440,7 +3545,7 @@ int aw881xx_device_init(struct aw881xx *aw881xx, struct aw881xx_container *aw_cf
 	aw881xx->cur_prof = aw881xx->prof_info.prof_desc[0].id;
 	aw881xx->set_prof = aw881xx->prof_info.prof_desc[0].id;
 
-	ret = aw881xx_fw_update(aw881xx, true);
+	ret = aw881xx_fw_update(aw881xx, true, false);
 	if (ret < 0) {
 		aw_dev_err(aw881xx->dev, "%s: fw update failed\n", __func__);
 		return ret;
