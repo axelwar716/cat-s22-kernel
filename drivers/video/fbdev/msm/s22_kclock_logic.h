@@ -4,12 +4,18 @@
  * exactly this code: local time and DST, text formatting, the autonomous
  * screen and the cover ownership plan.  Needs s22_kclock_font.h first and
  * div_s64(), div_u64_rem(), mktime64(), time64_to_tm(), struct tm,
- * DIV_ROUND_CLOSEST(), memset().
+ * DIV_ROUND_CLOSEST(), ARRAY_SIZE(), memset().
  */
 #ifndef S22_KCLOCK_LOGIC_H
 #define S22_KCLOCK_LOGIC_H
 
-#define KC_BOLT		'\x01'	/* charging mark in the small font */
+/* Colours (RGB565): the clock white; the date and battery S22Cover's
+ * Color.LTGRAY (0xCCCCCC).  The "-white" build sets KC_SMALL_RGB to 0xffffff. */
+#define KC_SMALL_RGB	0xcccccc
+#define KC_RGB565(rgb)	((((rgb) >> 8) & 0xf800) | (((rgb) >> 5) & 0x07e0) | \
+			 (((rgb) >> 3) & 0x001f))
+#define KC_CLOCK_COLOR	0xffff
+#define KC_SMALL_COLOR	KC_RGB565(KC_SMALL_RGB)
 
 static int kc_weekday(time64_t t)
 {
@@ -90,11 +96,12 @@ static int kc_format_hm(u32 day_min, bool h24, char *s)
 	return n;
 }
 
-/* "SAT 10 OCT" (max 10 chars): wday 0 = Sunday, mday 1-31, mon 0 = Jan. */
+/* "Sat 10 Oct" (max 10 chars), S22Cover's DateFormat "EEE d MMM" in en-US:
+ * wday 0 = Sunday, mday 1-31, mon 0 = Jan. */
 static int kc_format_date(int wday, int mday, int mon, char *s)
 {
-	static const char days[] = "SUNMONTUEWEDTHUFRISAT";
-	static const char months[] = "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC";
+	static const char days[] = "SunMonTueWedThuFriSat";
+	static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 	int i, n = 0;
 
 	if (wday < 0 || wday > 6 || mday < 1 || mday > 31 || mon < 0 ||
@@ -112,7 +119,8 @@ static int kc_format_date(int wday, int mday, int mon, char *s)
 	return n;
 }
 
-/* "85%" or "85% <bolt>" (max 6 chars); cap < 0 (no battery): empty. */
+/* "85%" or "85% +" while charging or full (S22Cover: status CHARGING or
+ * FULL), max 6 chars; cap < 0 (no battery): empty. */
 static int kc_format_batt(int cap, bool charging, char *s)
 {
 	int n = 0;
@@ -129,7 +137,7 @@ static int kc_format_batt(int cap, bool charging, char *s)
 	s[n++] = '%';
 	if (charging) {
 		s[n++] = ' ';
-		s[n++] = KC_BOLT;
+		s[n++] = '+';
 	}
 	return n;
 }
@@ -141,15 +149,15 @@ static int kc_small_index(char c)
 		return c - '0';
 	if (c >= 'A' && c <= 'Z')
 		return 10 + c - 'A';
+	if (c >= 'a' && c <= 'z')
+		return 36 + c - 'a';
 	switch (c) {
 	case '%':
-		return 36;
-	case '/':
-		return 37;
+		return 62;
+	case '+':
+		return 63;
 	case ' ':
-		return 38;
-	case KC_BOLT:
-		return 39;
+		return 64;
 	}
 	return -1;
 }
@@ -183,10 +191,37 @@ static const struct s22_kclock_glyph *kc_glyph(bool small, char c,
 	return &s22_kclock_glyphs[c == ':' ? 10 : c - '0'];
 }
 
-/* White text centred on cx with its baseline at base, blended into pix
- * (pw x ph, clipped). */
-static void kc_draw_text(u16 *pix, int pw, int ph, bool small, const char *s,
-			 int n, int cx, int base)
+/* Glyph g (alpha) with its pen at (x, base) blended into pix (pw x ph,
+ * clipped) in colour. */
+static void kc_blit(u16 *pix, int pw, int ph,
+		    const struct s22_kclock_glyph *g, const u8 *alpha, int x,
+		    int base, u16 color)
+{
+	int gx = x + g->bx, gy = base + g->by, px, py;
+
+	alpha += g->off;
+	for (py = 0; py < g->h; py++) {
+		int ry = gy + py;
+
+		if (ry < 0 || ry >= ph)
+			continue;
+		for (px = 0; px < g->w; px++) {
+			int rx = gx + px;
+			u32 al = alpha[py * g->w + px];
+			u16 *d;
+
+			if (!al || rx < 0 || rx >= pw)
+				continue;
+			d = &pix[ry * pw + rx];
+			*d = al == 255 ? color : kc_blend(*d, color, al);
+		}
+	}
+}
+
+/* Clock digits centred on cx with the baseline at base, white: the same
+ * placement as the client path (kc_render() in s22_kclock.c). */
+static void kc_draw_clock(u16 *pix, int pw, int ph, const char *s, int n,
+			  int cx, int base)
 {
 	const struct s22_kclock_glyph *g;
 	const u8 *alpha;
@@ -194,84 +229,148 @@ static void kc_draw_text(u16 *pix, int pw, int ph, bool small, const char *s,
 	int pen64, i;
 
 	for (i = 0; i < n; i++) {
-		g = kc_glyph(small, s[i], &alpha);
+		g = kc_glyph(false, s[i], &alpha);
 		if (g)
 			width64 += g->adv64;
 	}
 	pen64 = cx * 64 - (int)width64 / 2;
 
 	for (i = 0; i < n; i++) {
-		int gx, gy, px, py;
-
-		g = kc_glyph(small, s[i], &alpha);
+		g = kc_glyph(false, s[i], &alpha);
 		if (!g)
 			continue;
-		alpha += g->off;
-		gx = DIV_ROUND_CLOSEST(pen64, 64) + g->bx;
-		gy = base + g->by;
-		for (py = 0; py < g->h; py++) {
-			int ry = gy + py;
-
-			if (ry < 0 || ry >= ph)
-				continue;
-			for (px = 0; px < g->w; px++) {
-				int rx = gx + px;
-				u32 al = alpha[py * g->w + px];
-				u16 *d;
-
-				if (!al || rx < 0 || rx >= pw)
-					continue;
-				d = &pix[ry * pw + rx];
-				*d = al == 255 ? 0xffff : kc_blend(*d, 0xffff, al);
-			}
-		}
+		kc_blit(pix, pw, ph, g, alpha, DIV_ROUND_CLOSEST(pen64, 64), base,
+			KC_CLOCK_COLOR);
 		pen64 += g->adv64;
 	}
 }
 
-/* Autonomous screen: a band of the panel (rows ay..ay+ah-1, full width)
- * with three centred lines; baselines relative to the band. */
+/* Kerning of the pair a b in 1/1024 px (s22_kclock_small_kern). */
+static int kc_small_kern(char a, char b)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(s22_kclock_small_kern); i++)
+		if (s22_kclock_small_kern[i].a == a &&
+		    s22_kclock_small_kern[i].b == b)
+			return s22_kclock_small_kern[i].k1024;
+	return 0;
+}
+
+/* Advance of s[i] in 1/1024 px: hinted advance + kerning with s[i + 1]. */
+static int kc_small_adv(const char *s, int n, int i)
+{
+	const struct s22_kclock_glyph *g;
+	const u8 *alpha;
+	int a;
+
+	g = kc_glyph(true, s[i], &alpha);
+	a = g ? g->adv64 * 16 : 0;
+	if (i + 1 < n)
+		a += kc_small_kern(s[i], s[i + 1]);
+	return a;
+}
+
+/*
+ * Pen x of each glyph of a small-font line as S22Cover's TextView puts it
+ * on a cover xres wide: a view of xres - 2 * S22_KCLOCK_APP_PAD_X at
+ * S22_KCLOCK_APP_PAD_X, Layout ALIGN_CENTER (line width truncated and made
+ * even, left = (view - width) / 2) and Skia rounding every glyph origin to
+ * the nearest pixel (no subpixel positioning).
+ */
+static void kc_small_pens(const char *s, int n, int xres, int *px)
+{
+	int run = 0, max, pen, i;
+
+	for (i = 0; i < n; i++)
+		run += kc_small_adv(s, n, i);
+	max = (run >> 10) & ~1;
+	pen = (S22_KCLOCK_APP_PAD_X +
+	       ((xres - 2 * S22_KCLOCK_APP_PAD_X - max) >> 1)) << 10;
+	for (i = 0; i < n; i++) {
+		px[i] = (pen + 512) >> 10;
+		pen += kc_small_adv(s, n, i);
+	}
+}
+
+/* A date or battery line (max 12 chars) with the baseline at base. */
+static void kc_draw_small(u16 *pix, int pw, int ph, const char *s, int n,
+			  int base)
+{
+	const struct s22_kclock_glyph *g;
+	const u8 *alpha;
+	int px[12], i;
+
+	if (n > ARRAY_SIZE(px))
+		n = ARRAY_SIZE(px);
+	kc_small_pens(s, n, pw, px);
+	for (i = 0; i < n; i++) {
+		g = kc_glyph(true, s[i], &alpha);
+		if (g)
+			kc_blit(pix, pw, ph, g, alpha, px[i], base,
+				KC_SMALL_COLOR);
+	}
+}
+
+/*
+ * Autonomous screen = S22Cover's screen without its status and notice
+ * lines: the five line boxes of its layout (s22_kclock_font.h) stacked and
+ * centred like its LinearLayout, the clock centred in the clock box (as
+ * the client path) and the date and battery in their boxes.  Only a band
+ * of the panel is sent (rows ay..ay+ah-1, full width), centred on the ink;
+ * baselines are relative to the band.
+ */
 #define KC_AUTO_H	64		/* band height (16 KB per redraw) */
-#define KC_GAP_TIME	9		/* clock digits -> date capitals */
-#define KC_GAP_LINE	7		/* date -> battery */
 
 struct kc_layout {
 	int ay, ah;
+	int cx;				/* clock centre */
 	int base[3];			/* time, date, battery */
 };
 
-static void kc_layout_auto(int yres, struct kc_layout *l)
+static void kc_layout_auto(int xres, int yres, struct kc_layout *l)
 {
-	int big = -s22_kclock_glyphs[0].by;
-	int cap = S22_KCLOCK_SMALL_CAP;
-	int top = (yres - (big + KC_GAP_TIME + cap + KC_GAP_LINE + cap)) / 2;
+	int i, y, top, bottom, total = 0, base[3];
 
+	for (i = 0; i < S22_KCLOCK_APP_LINES; i++)
+		total += s22_kclock_app_line_h[i];
+	y = S22_KCLOCK_APP_PAD_Y + (yres - 2 * S22_KCLOCK_APP_PAD_Y - total) / 2;
+	for (i = 0; i < 3; i++) {
+		base[i] = y + s22_kclock_app_line_top[i];
+		y += s22_kclock_app_line_h[i];
+	}
+	top = base[0] + s22_kclock_glyphs[0].by;
+	bottom = base[2] + S22_KCLOCK_SMALL_DESC;
 	l->ah = yres < KC_AUTO_H ? yres : KC_AUTO_H;
-	l->ay = (yres - l->ah) / 2;
-	l->base[0] = top + big - l->ay;
-	l->base[1] = l->base[0] + KC_GAP_TIME + cap;
-	l->base[2] = l->base[1] + KC_GAP_LINE + cap;
+	l->ay = top - (l->ah - (bottom - top)) / 2;
+	if (l->ay > yres - l->ah)
+		l->ay = yres - l->ah;
+	if (l->ay < 0)
+		l->ay = 0;
+	l->cx = S22_KCLOCK_APP_PAD_X + (xres - 2 * S22_KCLOCK_APP_PAD_X) / 2;
+	for (i = 0; i < 3; i++)
+		l->base[i] = base[i] - l->ay;
 }
 
-/* pix (xres x l->ah) = black band with HH:MM, "SAT 10 OCT" and "85%"
- * (+ bolt while charging) for a local minute since the epoch. */
+/* pix (xres x l->ah) = black band with HH:MM, "Sat 10 Oct" and "85%"
+ * ("85% +" while charging) for a local minute since the epoch. */
 static void kc_render_screen(u16 *pix, int xres, const struct kc_layout *l,
 			     s64 minute, bool h24, int cap, bool chg)
 {
 	char s[12];
 	struct tm tm;
 	u32 day_min;
-	int n, cx = xres / 2;
+	int n;
 
 	memset(pix, 0, xres * l->ah * 2);
 	div_u64_rem(minute, 24 * 60, &day_min);
 	n = kc_format_hm(day_min, h24, s);
-	kc_draw_text(pix, xres, l->ah, false, s, n, cx, l->base[0]);
+	kc_draw_clock(pix, xres, l->ah, s, n, l->cx, l->base[0]);
 	time64_to_tm(minute * 60, 0, &tm);
 	n = kc_format_date(tm.tm_wday, tm.tm_mday, tm.tm_mon, s);
-	kc_draw_text(pix, xres, l->ah, true, s, n, cx, l->base[1]);
+	kc_draw_small(pix, xres, l->ah, s, n, l->base[1]);
 	n = kc_format_batt(cap, chg, s);
-	kc_draw_text(pix, xres, l->ah, true, s, n, cx, l->base[2]);
+	kc_draw_small(pix, xres, l->ah, s, n, l->base[2]);
 }
 
 /*
