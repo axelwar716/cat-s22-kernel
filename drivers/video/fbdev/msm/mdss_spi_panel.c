@@ -24,6 +24,7 @@
 #include "mdss_panel.h"
 #include "mdss_spi_panel.h"
 #include "mdss_spi_client.h"
+#include "s22_kclock.h"
 #ifdef TARGET_HW_MDSS_MDP3
 #include "mdp3.h"
 #endif
@@ -69,8 +70,17 @@ void mdss_spi_get_hall_state(int state)
 		pr_info("s22_cover: lid open, backlight gpio -> %d (bl=%u)\n",
 			bl > 0, bl);
 	}
+	s22_kclock_lid(!!state);
 }
 EXPORT_SYMBOL(mdss_spi_get_hall_state);
+
+/* Cover backlight GPIO for the kernel clock (autonomous mode). */
+void mdss_spi_s22_cover_bl(int on)
+{
+	if (gpio_is_valid(s22_cover_bl_gpio))
+		gpio_set_value_cansleep(s22_cover_bl_gpio, !!on);
+}
+
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
 {
 	struct spi_panel_data *ctrl_pdata = NULL;
@@ -1383,7 +1393,9 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 		bl_level = pdata->panel_info.bl_min;
 	WRITE_ONCE(s22_cover_requested_bl, bl_level);
 	if (gpio_is_valid(s22_cover_bl_gpio)) {
-		if (!bl_level && s22_cover_stock_closed())
+		if (s22_kclock_owns())
+			pr_debug("s22_cover: kernel clock owns the backlight\n");
+		else if (!bl_level && s22_cover_stock_closed())
 			pr_info("s22_cover: lid closed, keeping backlight gpio\n");
 		else
 			gpio_set_value_cansleep(s22_cover_bl_gpio,

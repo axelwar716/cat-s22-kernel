@@ -67,6 +67,7 @@ obj-$(CONFIG_FB_MSM_MDSS_HDMI_PANEL) += mdss_hdmi_cec.o
 obj-$(CONFIG_FB_MSM_MDSS_HDMI_PANEL) += mdss_hdmi_audio.o
 obj-$(CONFIG_FB_MSM_MDSS_HDMI_MHL_SII8334) += mhl_sii8334.o mhl_msc.o
 obj-$(CONFIG_FB_MSM_MDSS_SPI_PANEL) += mdss_spi_display.o
+obj-$(CONFIG_FB_MSM_MDSS_SPI_PANEL) += s22_kclock.o
 ccflags-y += -DTARGET_HW_MDSS_HDMI
 endif
 

@@ -22,4 +22,5 @@ int mdss_spi_tx_pixel(const void *buf, size_t len,
 		void (*spi_tx_compelet)(void *), void *ctx);
 #endif
 int mdss_spi_read_data(u8 reg_addr, u8 *data, u8 len);
+int mdss_spi_tx_pixel_sync(const void *buf, size_t len);
 #endif /* End of __MDSS_SPI_CLINET_H__ */

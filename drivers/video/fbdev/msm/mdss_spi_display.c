@@ -24,6 +24,7 @@
 #include "mdss_panel.h"
 #include "mdss_fb.h"
 #include "mdss_spi_panel.h"
+#include "s22_kclock.h"
 #include "mdss_spi_client.h"
 #include "mdss_mdp.h"
 #include "mdss_sync.h"
@@ -309,6 +310,7 @@ int mdss_spi_display_pre_commit(struct msm_fb_data_type *mfd,
 	}
 
 	mdss_spi_put_img(ctrl_pdata);
+	s22_kclock_compose(ctrl_pdata, (u16 *)ctrl_pdata->back_buf);
 
 	/* wait for SPI transfer done */
 	rc = mdss_spi_wait_tx_done(ctrl_pdata);
@@ -434,6 +436,7 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 				mfd->index, rc);
 			return rc;
 		}
+		s22_kclock_compose(ctrl_pdata, (u16 *)ctrl_pdata->back_buf);
 		temp_buf = ctrl_pdata->front_buf;
 		ctrl_pdata->front_buf = ctrl_pdata->back_buf;
 		ctrl_pdata->back_buf = temp_buf;
@@ -565,12 +568,20 @@ static int mdss_spi_display_off(struct msm_fb_data_type *mfd)
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
+	/* lid closed and no cover app: the kernel clock keeps the panel */
+	if (s22_kclock_display_off(ctrl_pdata)) {
+		mdss_spi_display_notifier_unregister(ctrl_pdata,
+				&mfd->mdp_sync_pt_data.notifier);
+		return 0;
+	}
+
 	ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_ACTIVE;
 
 	if (ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_INIT) {
 		rc = mdss_spi_panel_off(&ctrl_pdata->panel_data);
 		if (rc) {
 			pr_err("%s: Panel off failed\n", __func__);
+			s22_kclock_display_off_done();
 			return rc;
 		}
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_INIT;
@@ -578,6 +589,7 @@ static int mdss_spi_display_off(struct msm_fb_data_type *mfd)
 	rc = mdss_spi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_OFF);
 	mdss_spi_display_notifier_unregister(ctrl_pdata,
 			&mfd->mdp_sync_pt_data.notifier);
+	s22_kclock_display_off_done();
 
 	return rc;
 }
@@ -592,6 +604,8 @@ static int mdss_spi_display_on(struct msm_fb_data_type *mfd)
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
+	/* takes the cover back from the kernel clock, then full power on */
+	s22_kclock_display_on(ctrl_pdata);
 	rc = mdss_spi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_ON);
 	if (rc) {
 		pr_err("%s:Panel power on failed. rc=%d\n",
@@ -747,6 +761,7 @@ int mdss_spi_overlay_init(struct msm_fb_data_type *mfd)
 	spi_display_interface->ioctl_handler = spi_display_ioctl_handler;
 	spi_display_interface->kickoff_fnc = mdss_spi_display_kickoff;
 	spi_display_interface->dma_fnc = mdss_spi_display_dma;
+	s22_kclock_attach(ctrl_pdata);
 	spi_display_interface->pre_commit = mdss_spi_display_pre_commit;
 	spi_display_interface->atomic_validate =
 				mdss_spi_display_atomic_validate;

@@ -171,6 +171,7 @@ int mdss_spi_wait_tx_done(struct spi_panel_data *ctrl_pdata);
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable);
 int mdss_spi_panel_on(struct mdss_panel_data *pdata);
 int mdss_spi_panel_off(struct mdss_panel_data *pdata);
+void mdss_spi_s22_cover_bl(int on);
 int mdss_spi_display_register(void);
 
 #else

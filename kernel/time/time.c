@@ -51,6 +51,9 @@
  */
 struct timezone sys_tz;
 
+/* CAT S22 Flip: when sys_tz was last set (s22_kclock DST window) */
+time64_t s22_sys_tz_set;
+
 EXPORT_SYMBOL(sys_tz);
 
 #ifdef __ARCH_WANT_SYS_TIME
@@ -179,6 +182,7 @@ int do_sys_settimeofday64(const struct timespec64 *tv, const struct timezone *tz
 			return -EINVAL;
 
 		sys_tz = *tz;
+		s22_sys_tz_set = ktime_get_real_seconds();
 		update_vsyscall_tz();
 		if (firsttime) {
 			firsttime = 0;

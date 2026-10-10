@@ -121,6 +121,26 @@ int mdss_spi_tx_parameter(const void *buf, size_t len)
 	return rc;
 }
 
+/* Synchronous 16-bit pixel write (cover clock partial updates). */
+int mdss_spi_tx_pixel_sync(const void *buf, size_t len)
+{
+	struct spi_transfer t = {
+		.tx_buf = buf,
+		.len    = len,
+	};
+	struct spi_message m;
+
+	if (!mdss_spi_client) {
+		pr_err("%s: spi client not available\n", __func__);
+		return -EINVAL;
+	}
+
+	mdss_spi_client->bits_per_word = 16;
+	spi_message_init(&m);
+	spi_message_add_tail(&t, &m);
+	return spi_sync(mdss_spi_client, &m);
+}
+
 #ifdef TARGET_HW_MDSS_MDP3
 int mdp3_spi_tx_pixel(const void *buf, size_t len)
 {
