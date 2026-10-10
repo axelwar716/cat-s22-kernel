@@ -54,6 +54,15 @@ static bool s22_cover_stock_closed(void)
 	return READ_ONCE(s22_cover_stock_off) && !READ_ONCE(s22_cover_lid_open);
 }
 
+/*
+ * Cover backlight GPIO owner.  s22_kclock owns it while it owns the cover
+ * (autonomous mode): Android's level is still recorded but never reaches the
+ * GPIO, and the lid-open resync below is skipped.  The lock makes the owner
+ * change and Android's writes atomic (sleeping GPIO, process context).
+ */
+static DEFINE_MUTEX(s22_cover_bl_lock);
+static bool s22_cover_bl_kernel;
+
 void mdss_spi_get_hall_state(int state)
 {
 	int was_open = READ_ONCE(s22_cover_lid_open);
@@ -64,21 +73,47 @@ void mdss_spi_get_hall_state(int state)
 	/* Called from the hall work function (or probe): may sleep. */
 	if (state && !was_open && READ_ONCE(s22_cover_stock_off) &&
 	    gpio_is_valid(s22_cover_bl_gpio)) {
-		u32 bl = READ_ONCE(s22_cover_requested_bl);
+		mutex_lock(&s22_cover_bl_lock);
+		if (!s22_cover_bl_kernel) {
+			u32 bl = READ_ONCE(s22_cover_requested_bl);
 
-		gpio_set_value_cansleep(s22_cover_bl_gpio, bl > 0);
-		pr_info("s22_cover: lid open, backlight gpio -> %d (bl=%u)\n",
-			bl > 0, bl);
+			gpio_set_value_cansleep(s22_cover_bl_gpio, bl > 0);
+			pr_info("s22_cover: lid open, backlight gpio -> %d (bl=%u)\n",
+				bl > 0, bl);
+		}
+		mutex_unlock(&s22_cover_bl_lock);
 	}
 	s22_kclock_lid(!!state);
 }
 EXPORT_SYMBOL(mdss_spi_get_hall_state);
 
-/* Cover backlight GPIO for the kernel clock (autonomous mode). */
+/* Cover backlight GPIO from the kernel clock, only while it owns it. */
 void mdss_spi_s22_cover_bl(int on)
 {
-	if (gpio_is_valid(s22_cover_bl_gpio))
+	mutex_lock(&s22_cover_bl_lock);
+	if (s22_cover_bl_kernel && gpio_is_valid(s22_cover_bl_gpio))
 		gpio_set_value_cansleep(s22_cover_bl_gpio, !!on);
+	mutex_unlock(&s22_cover_bl_lock);
+}
+
+/*
+ * kernel = true: the kernel clock takes the backlight, GPIO off.
+ * kernel = false: back to Android, at its last requested level if Android
+ * has the cover on (android_on), else off.
+ */
+void mdss_spi_s22_cover_bl_owner(bool kernel, bool android_on)
+{
+	mutex_lock(&s22_cover_bl_lock);
+	s22_cover_bl_kernel = kernel;
+	if (gpio_is_valid(s22_cover_bl_gpio)) {
+		u32 bl = READ_ONCE(s22_cover_requested_bl);
+		int on = !kernel && android_on && bl > 0;
+
+		gpio_set_value_cansleep(s22_cover_bl_gpio, on);
+		pr_info("s22_cover: backlight owner %s, gpio -> %d (bl=%u)\n",
+			kernel ? "kernel clock" : "android", on, bl);
+	}
+	mutex_unlock(&s22_cover_bl_lock);
 }
 
 int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable)
@@ -1391,9 +1426,10 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 
 	if ((bl_level < pdata->panel_info.bl_min) && (bl_level != 0))
 		bl_level = pdata->panel_info.bl_min;
+	mutex_lock(&s22_cover_bl_lock);
 	WRITE_ONCE(s22_cover_requested_bl, bl_level);
 	if (gpio_is_valid(s22_cover_bl_gpio)) {
-		if (s22_kclock_owns())
+		if (s22_cover_bl_kernel)
 			pr_debug("s22_cover: kernel clock owns the backlight\n");
 		else if (!bl_level && s22_cover_stock_closed())
 			pr_info("s22_cover: lid closed, keeping backlight gpio\n");
@@ -1401,6 +1437,7 @@ void mdss_spi_panel_bl_ctrl_update(struct mdss_panel_data *pdata,
 			gpio_set_value_cansleep(s22_cover_bl_gpio,
 						bl_level > 0);
 	}
+	mutex_unlock(&s22_cover_bl_lock);
 
 	switch (ctrl_pdata->bklt_ctrl) {
 	case SPI_BL_WLED:
@@ -1809,6 +1846,14 @@ static int mdss_spi_panel_probe(struct platform_device *pdev)
 
 	ctrl_pdata->mdss_util = util;
 
+	/* before spi_panel_device_register(): registering the panel probes
+	 * fb2, whose overlay init attaches s22_kclock, whose work may take
+	 * spi_tx_mutex at once */
+	init_completion(&ctrl_pdata->spi_panel_te);
+	mutex_init(&ctrl_pdata->spi_tx_mutex);
+	mutex_init(&ctrl_pdata->te_mutex);
+	init_waitqueue_head(&ctrl_pdata->tx_done_waitq);
+
 	ctrl_name = of_get_property(pdev->dev.of_node, "label", NULL);
 	if (!ctrl_name)
 		pr_info("%s:%d, Ctrl name not specified\n",
@@ -1870,12 +1915,6 @@ static int mdss_spi_panel_probe(struct platform_device *pdev)
 	}
 
 	ctrl_pdata->panel_data.event_handler = mdss_spi_panel_event_handler;
-
-
-	init_completion(&ctrl_pdata->spi_panel_te);
-	mutex_init(&ctrl_pdata->spi_tx_mutex);
-	mutex_init(&ctrl_pdata->te_mutex);
-	init_waitqueue_head(&ctrl_pdata->tx_done_waitq);
 
 	rc = devm_request_irq(&pdev->dev,
 		gpio_to_irq(ctrl_pdata->disp_te_gpio),

@@ -19,6 +19,7 @@
 #include <linux/delay.h>
 
 #include "mdss_spi_client.h"
+#include "s22_kclock.h"
 
 #define MAX_READ_SPEED_HZ	9600000
 #define SPI_PANEL_COMMAND_LEN	1
@@ -141,6 +142,12 @@ int mdss_spi_tx_pixel_sync(const void *buf, size_t len)
 	return spi_sync(mdss_spi_client, &m);
 }
 
+/* The cover SPI device has probed (kernel clock, early boot). */
+bool mdss_spi_client_ready(void)
+{
+	return READ_ONCE(mdss_spi_client) != NULL;
+}
+
 #ifdef TARGET_HW_MDSS_MDP3
 int mdp3_spi_tx_pixel(const void *buf, size_t len)
 {
@@ -211,6 +218,8 @@ static int mdss_spi_client_probe(struct spi_device *spidev)
 	pr_debug("cs[%x] CPHA[%x] CPOL[%x] CS_HIGH[%x] Max_speed[%d]\n",
 		cs, cpha, cpol, cs_high, max_speed);
 	mdss_spi_client = spidev;
+	/* the kernel clock may have waited for the cover SPI device */
+	s22_kclock_spi_ready();
 
 	return 0;
 }

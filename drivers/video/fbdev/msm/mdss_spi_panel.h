@@ -172,6 +172,7 @@ int mdss_spi_panel_reset(struct mdss_panel_data *pdata, int enable);
 int mdss_spi_panel_on(struct mdss_panel_data *pdata);
 int mdss_spi_panel_off(struct mdss_panel_data *pdata);
 void mdss_spi_s22_cover_bl(int on);
+void mdss_spi_s22_cover_bl_owner(bool kernel, bool android_on);
 int mdss_spi_display_register(void);
 
 #else

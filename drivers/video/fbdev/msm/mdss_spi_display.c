@@ -445,8 +445,31 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 
 	mdss_spi_display_notify(ctrl_pdata, MDP_NOTIFY_FRAME_BEGIN);
 
+	/*
+	 * The kernel clock owns the cover (autonomous mode): the frame stays in
+	 * front_buf (sent if the cover is handed back to Android) and nothing
+	 * goes over SPI; the compositor sees a normal flushed frame.  The flag
+	 * only changes under spi_tx_mutex, so check it there.
+	 */
+	if (s22_kclock_swallow(ctrl_pdata, false)) {
+		bool swallow;
+
+		mutex_lock(&ctrl_pdata->spi_tx_mutex);
+		swallow = s22_kclock_swallow(ctrl_pdata, true);
+		mutex_unlock(&ctrl_pdata->spi_tx_mutex);
+		if (swallow) {
+			mdss_spi_display_notify(ctrl_pdata,
+				MDP_NOTIFY_FRAME_FLUSHED);
+			return 0;
+		}
+	}
+
 	enable_spi_panel_te_irq(ctrl_pdata, true);
 	mutex_lock(&ctrl_pdata->spi_tx_mutex);
+	if (s22_kclock_swallow(ctrl_pdata, true)) {
+		rc = 0;
+		goto flushed;
+	}
 	/* koff_cnt only rises here, under spi_tx_mutex: check and send */
 	if (busy || atomic_read(&ctrl_pdata->koff_cnt)) {
 		s22_frames_dropped++;
@@ -568,7 +591,7 @@ static int mdss_spi_display_off(struct msm_fb_data_type *mfd)
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
-	/* lid closed and no cover app: the kernel clock keeps the panel */
+	/* the kernel clock owns the cover: only Android's view goes off */
 	if (s22_kclock_display_off(ctrl_pdata)) {
 		mdss_spi_display_notifier_unregister(ctrl_pdata,
 				&mfd->mdp_sync_pt_data.notifier);
@@ -581,7 +604,7 @@ static int mdss_spi_display_off(struct msm_fb_data_type *mfd)
 		rc = mdss_spi_panel_off(&ctrl_pdata->panel_data);
 		if (rc) {
 			pr_err("%s: Panel off failed\n", __func__);
-			s22_kclock_display_off_done();
+			s22_kclock_display_off_done(rc);
 			return rc;
 		}
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_INIT;
@@ -589,7 +612,7 @@ static int mdss_spi_display_off(struct msm_fb_data_type *mfd)
 	rc = mdss_spi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_OFF);
 	mdss_spi_display_notifier_unregister(ctrl_pdata,
 			&mfd->mdp_sync_pt_data.notifier);
-	s22_kclock_display_off_done();
+	s22_kclock_display_off_done(rc);
 
 	return rc;
 }
@@ -604,12 +627,17 @@ static int mdss_spi_display_on(struct msm_fb_data_type *mfd)
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
-	/* takes the cover back from the kernel clock, then full power on */
-	s22_kclock_display_on(ctrl_pdata);
+	/* the kernel clock owns the cover: only Android's view goes on */
+	if (s22_kclock_display_on(ctrl_pdata)) {
+		mdss_spi_display_notifier_register(ctrl_pdata,
+				&mfd->mdp_sync_pt_data.notifier);
+		return 0;
+	}
 	rc = mdss_spi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_ON);
 	if (rc) {
 		pr_err("%s:Panel power on failed. rc=%d\n",
 			__func__, rc);
+		s22_kclock_display_on_done(rc);
 		return rc;
 	}
 
@@ -619,6 +647,7 @@ static int mdss_spi_display_on(struct msm_fb_data_type *mfd)
 	rc = mdss_spi_panel_on(&ctrl_pdata->panel_data);
 	mdss_spi_display_notifier_register(ctrl_pdata,
 			&mfd->mdp_sync_pt_data.notifier);
+	s22_kclock_display_on_done(rc);
 
 	return rc;
 }
@@ -691,7 +720,10 @@ static ssize_t mdss_spi_vsync_show_event(struct device *dev,
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
-	if (!(ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_ACTIVE))
+	/* while the kernel clock owns the cover, answer as Android sees it */
+	rc = s22_kclock_android_view(ctrl_pdata);
+	if (!rc || (rc < 0 &&
+		    !(ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_ACTIVE)))
 		return -EAGAIN;
 
 	vsync_ticks = ktime_to_ns(ctrl_pdata->vsync_time);
