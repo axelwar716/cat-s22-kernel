@@ -33,6 +33,19 @@ enum {
 	MDSS_SPI_RETIRE_FENCE,
 };
 
+/*
+ * mdss_spi_tx_pixel() sends every frame with one static spi_message, so a
+ * frame may only go out once the previous one has completed.  Sending it
+ * again while it is still queued re-inits a listed message and corrupts the
+ * SPI queue: spi_sync callers (s22_kclock, panel commands) then never return
+ * and take suspend and the compositor with them (04-10-2026, lid closed).
+ * A busy kickoff waits up to S22_KOFF_DROP_MS (the SPI core fails a stuck
+ * frame in ~1 s) and then drops the frame; the next one has the content.
+ */
+#define S22_KOFF_DROP_MS	1500
+static unsigned int s22_frames_dropped;
+module_param(s22_frames_dropped, uint, 0444);
+
 static int mdss_spi_get_img(struct spi_panel_data *ctrl_pdata,
 			struct mdp_layer_commit_v1 *commit, struct device *dev)
 {
@@ -394,6 +407,7 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 {
 	struct spi_panel_data *ctrl_pdata = NULL;
 	struct mdss_panel_data *pdata;
+	bool busy = false;
 	int rc = 0;
 
 	pdata = dev_get_platdata(&mfd->pdev->dev);
@@ -402,13 +416,17 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 
 	ctrl_pdata = container_of(pdata, struct spi_panel_data, panel_data);
 
-	if (!ctrl_pdata->layer_commit_pending) {
+	/* the previous async transfer still owns front_buf and the message */
+	if (!ctrl_pdata->layer_commit_pending &&
+	    !mdss_spi_wait_tx_done(ctrl_pdata) &&
+	    !wait_event_timeout(ctrl_pdata->tx_done_waitq,
+			atomic_read(&ctrl_pdata->koff_cnt) == 0,
+			msecs_to_jiffies(S22_KOFF_DROP_MS)))
+		busy = true;
+
+	if (!ctrl_pdata->layer_commit_pending && !busy) {
 		u32 yoffset = data ? data->var.yoffset : mfd->fbi->var.yoffset;
 		char *temp_buf;
-
-		/* the previous async transfer still owns front_buf */
-		if (!mdss_spi_wait_tx_done(ctrl_pdata))
-			pr_err_ratelimited("SPI transfer timeout before fb copy\n");
 
 		rc = mdss_spi_display_fb_to_back_buf(mfd, ctrl_pdata, yoffset);
 		if (rc) {
@@ -426,6 +444,14 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 
 	enable_spi_panel_te_irq(ctrl_pdata, true);
 	mutex_lock(&ctrl_pdata->spi_tx_mutex);
+	/* koff_cnt only rises here, under spi_tx_mutex: check and send */
+	if (busy || atomic_read(&ctrl_pdata->koff_cnt)) {
+		s22_frames_dropped++;
+		pr_err_ratelimited("fb%d: SPI busy, frame dropped (%u)\n",
+			mfd->index, s22_frames_dropped);
+		rc = 0;
+		goto flushed;
+	}
 	reinit_completion(&ctrl_pdata->spi_panel_te);
 	atomic_inc(&ctrl_pdata->koff_cnt);
 
@@ -444,7 +470,11 @@ int mdss_spi_display_kickoff(struct msm_fb_data_type *mfd,
 	rc = mdss_spi_tx_pixel(ctrl_pdata->front_buf,
 				ctrl_pdata->byte_per_frame,
 				mdss_spi_tx_fb_complete, ctrl_pdata);
+	/* not queued: no completion will drop the count */
+	if (rc && atomic_add_unless(&ctrl_pdata->koff_cnt, -1, 0))
+		wake_up_all(&ctrl_pdata->tx_done_waitq);
 #endif
+flushed:
 	mdss_spi_display_notify(ctrl_pdata, MDP_NOTIFY_FRAME_FLUSHED);
 
 	mutex_unlock(&ctrl_pdata->spi_tx_mutex);
