@@ -26,16 +26,16 @@
  *    (class "switch_hall"), updated about 300 ms after the edge;
  *  - input device "hall_sensor", phys "/dev/input/hall_dev", EV_SW/SW_LID.
  *
- * Difference from stock: the stock driver advertises SW_LID but never
+ * Differences from stock: the stock driver advertises SW_LID but never
  * reports it (it emits KEY_SLEEP/KEY_WAKEUP, which the input core drops
  * because EV_KEY is not set), so SW_LID stays 0 forever. This driver
- * reports SW_LID on every change. By default SW_LID mirrors the switch
- * state (1 = open, 0 = closed): with the lid closed it reads 0 exactly as
- * on stock, and LineageOS' frameworks-native-hall-polarity.patch, which
- * inverts SW_LID for "hall_sensor", turns it into the right lid state.
- * Set CONFIG_SENSORS_HALL_SW_LID_LINUX_POLARITY (or the sw_lid_linux_polarity
- * parameter) to report the standard Linux meaning (1 = closed) instead,
- * which is what an unpatched framework expects.
+ * reports SW_LID on every change with the Linux/AOSP meaning (1 = lid
+ * closed), which is what an unpatched framework (any GSI) expects. The input
+ * device is named "s22_lid" instead of "hall_sensor": LineageOS builds for
+ * the S22 that carry frameworks-native-hall-polarity.patch invert SW_LID
+ * only for a device called "hall_sensor", so with the new name the patch no
+ * longer applies and every ROM gets the same signal from the same boot image.
+ * The switch device, the phys path, the IRQ and the module name are kept.
  */
 
 #include <linux/err.h>
@@ -56,16 +56,11 @@
 #include <linux/switch.h>
 
 #define LID_DEV_NAME		"hall_sensor"
+#define LID_INPUT_NAME		"s22_lid"	/* not "hall_sensor": see above */
 #define HALL_INPUT		"/dev/input/hall_dev"
 #define HALL_SWITCH_NAME	"hall_switch"
 #define HALL_DEBOUNCE_MS	300
 #define HALL_WAKEUP_MS		(HALL_DEBOUNCE_MS + 700)
-
-static bool sw_lid_linux_polarity =
-	IS_ENABLED(CONFIG_SENSORS_HALL_SW_LID_LINUX_POLARITY);
-module_param(sw_lid_linux_polarity, bool, 0444);
-MODULE_PARM_DESC(sw_lid_linux_polarity,
-		 "Report SW_LID=1 when closed (Linux convention) instead of the S22 stock-compatible 0");
 
 struct hall_data {
 	int gpio;		/* device use gpio number */
@@ -109,9 +104,7 @@ static int hall_read_state(struct hall_data *data)
 static void hall_report_lid(struct hall_data *data, int state)
 {
 	/* state 1 = open; Linux SW_LID 1 = closed */
-	int sw = sw_lid_linux_polarity ? !state : state;
-
-	input_report_switch(data->hall_dev, SW_LID, sw);
+	input_report_switch(data->hall_dev, SW_LID, !state);
 	input_sync(data->hall_dev);
 }
 
@@ -159,7 +152,7 @@ static int hall_input_init(struct platform_device *pdev,
 		dev_err(&pdev->dev, "input device allocation failed\n");
 		return -EINVAL;
 	}
-	data->hall_dev->name = LID_DEV_NAME;
+	data->hall_dev->name = LID_INPUT_NAME;
 	data->hall_dev->phys = HALL_INPUT;
 	__set_bit(EV_SW, data->hall_dev->evbit);
 	__set_bit(SW_LID, data->hall_dev->swbit);
@@ -167,7 +160,7 @@ static int hall_input_init(struct platform_device *pdev,
 	err = input_register_device(data->hall_dev);
 	if (err < 0) {
 		dev_err(&pdev->dev, "unable to register input device %s\n",
-				LID_DEV_NAME);
+				LID_INPUT_NAME);
 		return err;
 	}
 
