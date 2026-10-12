@@ -1,84 +1,81 @@
-# CAT S22 Flip kernel — the simple version
+# CAT S22 Flip kernel — the "i missed school" version
 
-This is the easy-mode explanation of the [main README](README.md). No tech talk. If you want the details, read that one.
+Same info as the [nerd README](README.md), minus the nerd.
 
-## What is this?
+## Wtf is this
 
-The **kernel** is the bottom layer of the phone's software: the part that talks to the keys, the screens, the battery and so on. CAT shipped the S22 Flip with a kernel that has a bunch of annoying bugs, and they never shared its code.
+The kernel is the part of the phone that talks to the keys, screens and battery. CAT's one sucks and they never shared the code. This one replaces it: fixes the basic stuff, stays close to stock, doesn't try to be cool. **Stable > fancy.**
 
-This is a **replacement kernel** that fixes the basic stuff and stays as close to the original as possible. The goal is **stable**, not fancy.
+One file. Flash it. Your apps and photos stay.
 
-You get one file. You put it on the phone. Your apps, photos and settings stay where they are.
+## What it fixes (and who to blame)
 
-## What it fixes
+- **Keypad.** Stock gives you "hhello" and ignores soft presses on worn keys. Now one press = one letter. Four suspects, all guilty:
+  - **The kernel** checked the key while it was still bouncing and basically flipped a coin.
+  - **The circuit** was built for brand-new keys only. Worn key? "Didn't happen."
+  - **Android** asks the app what's before the cursor, the app takes a nap, your letter gets bored and leaves.
+  - **The keyboard app** was on vacation. TT9 S22 is the one that came back.
+- **Lid.** The kernel told Android about the lid in a language Android doesn't speak. Android left it on read. Fixed.
+- **Outer screen.** Lid closed = time, date and battery, no app needed. The stock driver waited for a "ready" that never comes, mixed up the colors and could freeze the whole phone when you closed the lid. Classic.
+- **Stuff CAT never published:** touchscreen, speaker, USB‑C headphones, hearing-aid coil, keypad light, lid sensor. All work. Dug out of other phones and CAT's own files. Treasure hunt, no map.
+- **Battery.** Lid closed, it basically sleeps. No villain here.
 
-- **Keypad.** On stock, letters come out doubled ("hhello") and soft taps get ignored, especially on the 1 / 4 / 7 / * keys. Now every press counts once, even on worn keys. Why it was broken? Four suspects, all guilty:
-  - **The kernel driver** looked at the key exactly once, ~10 ms after you touched it, while the contact was still bouncing for up to 18 ms. It basically asked "one press or two?" mid-bounce and guessed with a coin. Hello "hhello".
-  - **The circuit** was designed for brand-new keys only. A worn key sends a weaker signal and the stock wiring just shrugs: "too quiet, didn't happen". Apparently nobody pictured a keypad older than six months.
-  - **Android** asks the text box "hey, what's before the cursor?" and some apps take a little nap before answering. Your letter waits, gets bored and leaves.
-  - **The keyboard app** was on vacation: an extra delay stacked on top of everything else, letters dropped when it got busy, and the odd random space when a timer ran out. TT9 S22 is the one that came back from holidays.
-- **Lid.** On stock, Android never really knew if the flip was open or closed. Now it does. Why: the kernel announced the lid as a mystery key that Android had never heard of, so Android left it on read.
-- **Outer screen (the small one on the outside).** With the lid closed it shows the **time, the date and the battery %**, by itself, no app needed. It lights up for 8 seconds when you close the lid or press volume / the orange key. With the lid open it stays off. Why it was a mess: the stock driver waited for a "ready" signal the screen never sends (patience of a saint, memory of a goldfish), mixed up its colors, and could jam its own queue and freeze the phone when you closed the lid.
-- **Missing parts CAT never published:** touchscreen, loudspeaker, headphones over USB‑C, the hearing-aid coil, the keypad backlight and the lid sensor. All work. Why: CAT never shared their kernel code, so the missing bits were dug out of other phones' public kernels and CAT's own binaries. Treasure hunt, no map.
-- **Battery:** with the lid closed it barely uses anything (measured over 35.7 hours with the lid closed, on my LineageOS). No villain here: the outside clock wakes up once a minute, draws, and goes straight back to sleep.
+## Comes with
 
-## What else comes in the file
+- **TT9 S22**, a keyboard made for this keypad. Installs itself on first boot. Hate it? Uninstall it, it won't come back.
+- **Magisk** (root). Open it once with internet to finish setup.
 
-- **TT9 S22**, a keyboard app made for this keypad. It installs itself the first time the phone starts. Don't want it? Uninstall it like any app; it won't come back.
-- **Magisk**, which gives you root (admin access to the phone). Open the Magisk app once with internet to finish setting it up.
+## Using another keyboard?
 
-## Using a different keyboard app?
+Turn its "key repeat protection" / debounce **off (0)**. The kernel already does that job. Both doing it = eaten letters, worse typing. Can't turn it off? Use TT9 S22.
 
-Fine, but go to its settings and turn its **"key repeat protection" / debounce to 0 ms or off**. The kernel already does that job. If the app does it too, fast double presses (like "oo") get eaten and typing gets **worse**, not better. If your keyboard app doesn't let you turn it off, use TT9 S22 instead.
+## Install
 
-## How to install
-
-You need an **unlocked bootloader** (if you don't know what that is, stop here and look it up first) and a PC with `adb` and `fastboot`.
+You need an **unlocked bootloader** and a PC with `adb` and `fastboot`. Don't know what that is? Google first, flash later.
 
 1. Download `boot-s22-stock-stable-4-tt9en.img` from [Releases](../../releases/tag/stock-stable-4).
-2. **Save a copy of your current `boot.img` first.** This is your undo button.
-3. Plug the phone in and run:
+2. **Back up your current `boot.img`.** That's your undo button.
+3. Run:
    ```
    adb reboot bootloader
    fastboot flash boot boot-s22-stock-stable-4-tt9en.img
    fastboot reboot
    ```
-4. **Nothing is wiped.** Your ROM and your stuff stay.
 
-**If it doesn't start, or it says "data may be corrupt": DON'T factory reset.** Just put your old one back:
+Nothing gets wiped.
+
+**Doesn't boot, or says "data may be corrupt"? DON'T factory reset.** Just flash your backup:
 ```
 fastboot flash boot <your saved boot.img>
 ```
 
-## What has been tested
+## Tested?
 
-- **Works:** on my own phone every day (my own LineageOS 20, not public, with CAT's original v30 vendor).
-- **Also works on Android 16** (a "GSI" called TrebleDroid): Wi‑Fi, Bluetooth, sound, both cameras, sensors, lid and the outer-screen clock. But read the problems below.
-- **Not tested:** CAT's original Android 11.
-- **Not tested: calls over 4G (VoLTE / VoWiFi).** I don't know if they work. Lots of carriers have shut down old 2G/3G, so without VoLTE your phone might not be able to call at all. **Please test it and tell me**: [issue #2](../../issues/2) explains how, even without a PC.
+- **My phone, every day** (my own LineageOS 20, not public, with CAT's vendor): works.
+- **Android 16** (TrebleDroid GSI): mostly works. Read the crap below.
+- **CAT's stock Android 11:** no idea.
+- **Calls over 4G (VoLTE / VoWiFi):** no idea. Carriers are killing 2G/3G, so this one matters. Test it and tell me in [issue #2](../../issues/2), no PC needed.
 
-## Known problems
+## Known crap
 
-- **On Android 15 or newer, the outer clock shows the wrong time.** Android stopped telling the kernel your time zone, so the clock runs on UK time. In Spain, for example, it's 1 hour behind. On Android 13 (like my LineageOS) it's fine. Details: [issue #1](../../issues/1).
-- **On Android 16 with CAT's original vendor, the phone freezes** unless you apply a small fix after every restart (you need root):
+- **Android 15+:** the outer clock shows the wrong time. Android stopped telling the kernel your time zone. [Issue #1](../../issues/1).
+- **Android 16 + CAT's vendor:** freezes unless you run this after every reboot (needs root):
   ```
   resetprop ro.lmk.use_psi true
   setprop ctl.start lmkd
   ```
-  It's lost every time you reboot.
-- **On Android 16, Magisk doesn't start**, so no Magisk root there (that build has its own root through `adb root`). TT9 S22 still installs fine.
-- **On Android 16, the outer screen only shows the clock**: no notifications or who's calling.
-- **On Android 16, the orange and speaker keys do nothing**, and the red key locks the phone instead of hanging up.
-- **On Android 16, to make the phone sleep when you close the lid**, run this once: `adb shell settings put global lid_behavior 1`
-- **Battery on Android 16 hasn't been measured yet.**
+- **Android 16:** Magisk doesn't start. TT9 S22 still installs.
+- **Android 16:** outer screen is clock only, orange and speaker keys do nothing, red key locks the phone instead of hanging up.
+- **Android 16:** closing the lid won't put it to sleep until you run this once: `adb shell settings put global lid_behavior 1`
+- **Android 16 battery:** not checked yet.
 
 ## Support
 
-I fix main issues only. This is my hobby, not a product. If something is badly broken, open an [issue](../../issues).
+Main issues only. Hobby, not a product. Really broken? Open an [issue](../../issues).
 
-## The boring legal bit
+## Boring legal stuff
 
-- Free and open source. The code is in the [`stock-stable-4` branch](../../tree/stock-stable-4); how to build it is in the [main README](README.md#source).
+- Free and open source. Code in the [`stock-stable-4` branch](../../tree/stock-stable-4), how to build it in the [nerd README](README.md#source).
 - Kernel and READMEs: GPL-2.0. TT9 S22: Apache-2.0. Magisk: GPL-3.0. See [`NOTICE`](NOTICE).
-- **No warranty.** Flashing always has some risk, so keep that `boot.img` backup.
+- **No warranty.** Flashing can go wrong, keep that backup.
 - Not related to CAT, Caterpillar or Bullitt Group.
