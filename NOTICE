@@ -8,8 +8,8 @@ What is covered by what:
   Foundation, Google, AWINIC, Chipsemi and WillSemi; their copyright notices
   stay in each file. The CAT S22 Flip work is Copyright (C) 2026 cat-s22 and
   is marked in the files it wrote or changed.
-- This README and ramdisk/overlay.d: Copyright (C) 2026 cat-s22, GPL-2.0
-  (see LICENSE).
+- README.md, README-SIMPLE.md and ramdisk/overlay.d: Copyright (C) 2026
+  cat-s22, GPL-2.0 (see LICENSE).
 - TT9 S22 (tt9/ and TT9S22-en.apk in the release): a modified Traditional T9
   v64.0, Copyright Dimo Karaivanov and the TT9 contributors, Apache-2.0. The
   S22 changes are Copyright (C) 2026 cat-s22, also Apache-2.0. See tt9/NOTICE.

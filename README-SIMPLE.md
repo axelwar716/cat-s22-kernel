@@ -23,7 +23,7 @@ One file. Flash it. Ur apps and photos stay.
 
 **Outer screen.** lid closed = time, date and battery, drawn by the kernel itself, no app needed. the stock driver waited for a "frame done" signal the panel never sends, sent the colors in the wrong format, and could corrupt its own queue and freeze the whole phone when u closed the lid. classic.
 
-**Stuff CAT never published:** touchscreen, speaker amp, USB‑C headphones, hearing-aid coil, keypad light, lid sensor. all work. dug out of open kernels from other phones with the same chips, plus CAT's own binaries. treasure hunt, no map. and CAT's own signed audio and wifi modules still load untouched, cuz the kernel was rebuilt to match stock.
+**Stuff CAT never published (added):** touchscreen, speaker amp, USB‑C headphones, hearing-aid coil, keypad light, lid sensor. dug out of open kernels from other phones with the same chips, plus CAT's own binaries. treasure hunt, no map. and CAT's own signed audio and wifi modules still load untouched, cuz the kernel was rebuilt to match stock.
 
 **Battery.** lid closed, it basically sleeps. the outer clock wakes up just to redraw, then back to sleep. no villain here.
 
@@ -61,17 +61,18 @@ fastboot flash boot <your saved boot.img>
 ## Tested?
 
 - **My phone, every day** (my own LineageOS 20, not public, on CAT's vendor): works.
-- **Android 16** (TrebleDroid GSI): mostly works. read the crap below.
+- **Android 16** (TrebleDroid GSI): booted it and checked wifi, bluetooth, sound, both cameras, sensors, battery reading, lid, GPS starting and the outer clock. read the crap below.
 - **CAT's stock Android 11:** no idea.
 - **Calls over 4G (VoLTE / VoWiFi):** no idea. carriers are killing 2G/3G, so this one matters. test it and tell me in [issue #2](../../issues/2), no PC needed.
 
 ## Known crap
 
 - **Android 15+:** the outer clock shows the wrong time. android stopped telling the kernel ur time zone. [Issue #1](../../issues/1).
-- **Android 16 + CAT's vendor:** freezes cuz the memory killer (`lmkd`) keeps crashing, unless u run this after every reboot (needs root):
+- **Android 16 + CAT's vendor:** freezes cuz the memory killer (`lmkd`) keeps crashing, unless u run this from ur PC after every reboot. needs root, and Magisk doesn't start there, so root comes from the GSI itself (`userdebug` builds let u do `adb root`):
   ```
-  resetprop ro.lmk.use_psi true
-  setprop ctl.start lmkd
+  adb root
+  adb shell /debug_ramdisk/resetprop ro.lmk.use_psi true
+  adb shell setprop ctl.start lmkd
   ```
 - **Android 16:** Magisk doesn't start. TT9 S22 still installs.
 - **Android 16:** closing the lid won't put it to sleep until u run this once: `adb shell settings put global lid_behavior 1`

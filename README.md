@@ -13,7 +13,7 @@ The only goal of this build is to be **stable**: fix the keypad and the other ba
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
 > **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work. Reports and easy debug steps: [#2](../../issues/2).
-> **Tested on a GSI:** Android 16 from TrebleDroid works with this same kernel, even camera and the 2nd screen clock (see [On a GSI](#on-a-gsi)). On the stock v30 vendor it needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
+> **Tested on a GSI:** Android 16 from TrebleDroid boots with this same kernel; what I checked, camera and 2nd screen clock included, is in [On a GSI](#on-a-gsi). On the stock v30 vendor it needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
 > **Not tested on CAT's stock Android 11 system.** My daily setup is my own LineageOS 20 build with the stock v30 vendor.
 
 ## Downloads
@@ -126,7 +126,7 @@ A fork of [TT9](https://github.com/sspanak/tt9) v64.0 (English only, 3.8 MB, pac
 - **Needs this kernel:** on the stock kernel the bouncing comes back.
 - **Using another keyboard app?** The kernel already debounces the keypad. Set the app's own key debounce ("accidental key repeat protection") to **0 ms / off**. If the app doesn't let you, its debounce stacks on top of the kernel's: fast presses of the same key get dropped, which undoes part of the kernel fixes and makes typing worse than with TT9 S22. (Regular TT9: *Accidental Key Repeat Protection* → *Off*.)
 
-How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing. Log: `logcat -s tt9-s22`. The copies here only add a license header comment; otherwise they are identical to the ones in the image.
+How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing, and a later image with a newer TT9 S22 updates it only if you still have it (it never comes back after an uninstall, and is never set as the keyboard again). Log: `logcat -s tt9-s22`. The copies here only add a license header comment; otherwise they are identical to the ones in the image, except for the "never comes back after an uninstall, even with a newer TT9 S22" check, added for the next release (in `stock-stable-4` there's no newer version, so it behaves the same).
 
 ### Root
 
@@ -139,13 +139,13 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 - 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
 - **Not tested:** IMS / VoLTE / VoWiFi ([#2](../../issues/2)) and CAT's stock Android 11 system.
 
-### On a GSI (i don't think higher android versions would bring any useful value, but spend more battery)
+### On a GSI (i don't think higher android versions would bring any useful value, but spend more battery, not tested fully)
 
-Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). All works, even camera and 2nd screen.
+Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). What I checked, camera and 2nd screen included:
 
-- Checked on the device: Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard.
+- Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard.
 - **2nd screen:** the kernel draws the clock by itself with the lid closed. **On Android 15+ the clock shows the wrong local time** (UTC + DST hour; 1 h behind in Spain): [#1](../../issues/1).
-- **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root: `resetprop ro.lmk.use_psi true` then `setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). It's lost on reboot.
+- **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root (`adb root`, see the Magisk point below): `adb shell /debug_ramdisk/resetprop ro.lmk.use_psi true` then `adb shell setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). Plain `resetprop` isn't in the `PATH` there, cuz the Magisk daemon doesn't start; Magisk's early init still leaves it in `/debug_ramdisk`. It's lost on reboot.
 - Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`). Magisk's early init still runs `overlay.d` (that's how TT9 S22 got installed); it's the Magisk daemon that doesn't start.
 - To make the phone sleep when the lid closes, run once: `adb shell settings put global lid_behavior 1` (AOSP default is "do nothing").
 - Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`.
@@ -171,7 +171,7 @@ Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-2025061
 
 Copyright (C) 2026 cat-s22.
 
-- Kernel, this README and `ramdisk/overlay.d`: **GPL-2.0** ([`LICENSE`](LICENSE)). The kernel keeps the copyright of Linux, Qualcomm and the driver authors; the S22 Flip work is marked `Copyright (C) 2026 cat-s22` in the files it wrote or changed.
+- Kernel, both READMEs (`README.md`, `README-SIMPLE.md`) and `ramdisk/overlay.d`: **GPL-2.0** ([`LICENSE`](LICENSE)). The kernel keeps the copyright of Linux, Qualcomm and the driver authors; the S22 Flip work is marked `Copyright (C) 2026 cat-s22` in the files it wrote or changed.
 - TT9 S22: **Apache-2.0** ([`tt9/LICENSE`](tt9/LICENSE), [`tt9/NOTICE`](tt9/NOTICE)), based on TT9 by Dimo Karaivanov and contributors.
 - Magisk 27.0: GPL-3.0, by John Wu.
 
