@@ -13,8 +13,9 @@ The only goal of this build is to be **stable**: fix the keypad and the other ba
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
 > **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work. Reports and easy debug steps: [#2](../../issues/2).
+>
 > **Tested on 3 GSIs:** Android 13 (LineageOS 20), Android 15 (VoltageOS 4.5) and Android 16 (TrebleDroid) boot with this kernel, and video recording + flashlight were checked on all three. What I checked on each one is in [Tested on](#tested-on). On the stock v30 vendor, Android 16 needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
-> **CAT's stock Android 11:** `stock-stable-4` was checked by hand there; `stock-stable-5` not yet. My daily setup is my own LineageOS 20 build with the stock v30 vendor.
+> **CAT's stock Android 11:** `stock-stable-4` was checked.
 
 ## Downloads
 
