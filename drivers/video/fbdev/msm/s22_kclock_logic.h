@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * CAT S22 Flip cover clock (s22_kclock.c): pure logic, no kernel calls.
  * Kept apart so the host harness (cat-s22-rom/tools/kclock-harness) builds
@@ -5,6 +6,8 @@
  * screen and the cover ownership plan.  Needs s22_kclock_font.h first and
  * div_s64(), div_u64_rem(), mktime64(), time64_to_tm(), struct tm,
  * DIV_ROUND_CLOSEST(), ARRAY_SIZE(), memset().
+ *
+ * Copyright (C) 2026 cat-s22
  */
 #ifndef S22_KCLOCK_LOGIC_H
 #define S22_KCLOCK_LOGIC_H

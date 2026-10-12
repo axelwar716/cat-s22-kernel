@@ -2,6 +2,7 @@
  *  GPIO driven matrix keyboard driver
  *
  *  Copyright (c) 2008 Marek Vasut <marek.vasut@gmail.com>
+ *  Copyright (C) 2026 cat-s22 (CAT S22 Flip changes)
  *
  *  Based on corgikbd.c
  *

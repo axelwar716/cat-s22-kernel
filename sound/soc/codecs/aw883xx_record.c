@@ -9,6 +9,8 @@
  * I2C driver at run time. Until an aw883xx driver is integrated this
  * only provides the exported handshake, which reports "absent" so the
  * machine driver keeps the aw881xx (or default) codec link.
+ *
+ * Copyright (C) 2026 cat-s22
  */
 #include <linux/export.h>
 #include <linux/module.h>

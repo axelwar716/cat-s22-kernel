@@ -2,6 +2,8 @@
 /*
  * AWINIC AW8155 hearing-aid-compatibility (HAC) amplifier control.
  * The prototype is part of the CAT S22 Flip v30 vendor module ABI.
+ *
+ * Copyright (C) 2026 cat-s22
  */
 #ifndef __SOUND_AW8155_H
 #define __SOUND_AW8155_H

@@ -14,6 +14,8 @@
  *		aw8155,en-gpio = <&tlmm 38 0>;
  *		aw8155,mode = <1>;	(optional, 1..4, default 1)
  *	};
+ *
+ * Copyright (C) 2026 cat-s22
  */
 #include <linux/delay.h>
 #include <linux/gpio.h>

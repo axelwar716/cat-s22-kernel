@@ -1,4 +1,9 @@
-/* CAT S22 Flip cover clock drawn by the kernel (see s22_kclock.c). */
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * CAT S22 Flip cover clock drawn by the kernel (see s22_kclock.c).
+ *
+ * Copyright (C) 2026 cat-s22
+ */
 #ifndef S22_KCLOCK_H
 #define S22_KCLOCK_H
 

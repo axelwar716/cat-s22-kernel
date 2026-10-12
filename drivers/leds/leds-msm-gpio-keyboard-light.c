@@ -2,6 +2,7 @@
  * GPIO keypad backlight for the CAT S22 Flip.
  *
  * Copyright (c) 2013-2014, 2017, 2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2026 cat-s22 (CAT S22 Flip changes)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and

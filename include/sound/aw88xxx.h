@@ -6,6 +6,8 @@
  *
  * flag != 0: record that a PA of that family has registered its DAI.
  * Returns 1 if a PA of that family has registered its DAI, else 0.
+ *
+ * Copyright (C) 2026 cat-s22
  */
 #ifndef __SOUND_AW88XXX_H
 #define __SOUND_AW88XXX_H
