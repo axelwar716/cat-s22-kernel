@@ -6,7 +6,7 @@ A **stability-focused** kernel for the CAT S22 Flip (firmware v30, `4.9.227-perf
 
 ## Scope: stable first
 
-The only goal of this build is to be **stable**: fix the keypad and the other basic things that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, same config, same toolchain, the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
+The only goal of this build is to be **stable**: fix the keypad and the other basic things(was complex asf) that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, same config, same toolchain, the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
 
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
