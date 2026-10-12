@@ -144,12 +144,12 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). All works, even camera and 2nd screen.
 
 - Checked on the device: Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard.
-- **2nd screen:** the kernel draws the clock by itself with the lid closed. Android doesn't drive the outer screen on a GSI (it only sees the inner 480×640 panel), so no notifications or caller ID there. **On Android 15+ the clock shows the wrong local time** (UTC + DST hour; 1 h behind in Spain): [#1](../../issues/1).
+- **2nd screen:** the kernel draws the clock by itself with the lid closed. **On Android 15+ the clock shows the wrong local time** (UTC + DST hour; 1 h behind in Spain): [#1](../../issues/1).
 - **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root: `resetprop ro.lmk.use_psi true` then `setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). It's lost on reboot.
 - Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`). Magisk's early init still runs `overlay.d` (that's how TT9 S22 got installed); it's the Magisk daemon that doesn't start.
 - To make the phone sleep when the lid closes, run once: `adb shell settings put global lid_behavior 1` (AOSP default is "do nothing").
-- Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`. The **orange and speaker keys are unmapped**, and the **red key locks** the phone instead of hanging up.
-- **Not measured on the GSI:** battery drain (it doesn't suspend with USB plugged in) and calls (no SIM). IMS / VoLTE: [#2](../../issues/2).
+- Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`.
+- **Not tested on the GSI:** calls (no SIM). IMS / VoLTE: [#2](../../issues/2).
 
 ## Source
 

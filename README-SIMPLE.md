@@ -74,9 +74,7 @@ fastboot flash boot <your saved boot.img>
   setprop ctl.start lmkd
   ```
 - **Android 16:** Magisk doesn't start. TT9 S22 still installs.
-- **Android 16:** outer screen is clock only, orange and speaker keys do nothing, red key locks the phone instead of hanging up.
 - **Android 16:** closing the lid won't put it to sleep until u run this once: `adb shell settings put global lid_behavior 1`
-- **Android 16 battery:** not checked yet.
 
 ## Support
 
