@@ -6,7 +6,7 @@ A **stability-focused** kernel for the CAT S22 Flip (firmware v30, `4.9.227-perf
 
 ## Scope: stable first
 
-The only goal of this build is to be **stable**: fix the keypad and the other basic things(was complex asf) that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, same config, same toolchain, the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
+The only goal of this build is to be **stable**: fix the keypad and the other basic things(was complex asf) that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, the stock config and a Clang 10 compiler like stock (small differences listed [below](#kernel-base)), the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
 
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
@@ -51,9 +51,15 @@ Only `boot` is replaced: **no wipe**, your ROM and data stay as they are. One im
 
 CAT never released the kernel source for the S22 Flip, so it was rebuilt to match stock:
 
-- Qualcomm 4.9 tree (`LA.UM.9.8.c26`), the stock `/proc/config.gz`, AOSP Clang 10.0.6 (`r377782d`). `uname -r` is still `4.9.227-perf`.
+- Base: Qualcomm 4.9 tree `LA.UM.9.8.c26` (`msm89x7-mainline/msm-4.9` at `c348797f`). `uname -r` is still `4.9.227-perf`: version and `-perf` come from the tree and the stock config, not set by hand.
+- Config `s22flip_defconfig`, derived from the stock `/proc/config.gz`. Differences:
+  - `SYSTEM_TRUSTED_KEYS` points at CAT's module-signing certificate (below).
+  - The OEM drivers CAT didn't publish are provided by this tree (all built in, like stock). `LEDS_MSM_GPIO_KEYBOARD_LIGHT` is on: the stock config lists it as off, but the stock kernel contains the driver.
+  - Off because the code doesn't exist in the public tree or the part isn't fitted: Goodix GT1X (`GTP_*`) and 3 Cypress CYTTSP5 loader options. Touch firmware online update stays off.
+- Compiler: AOSP Clang 10.0.6 (`r377782d`). Stock was built with a non-public Clang 10.0.7; only a Clang build reproduces the stock module CRCs. The Snapdragon-LLVM-only warning flags in the `Makefile`s are passed only when the compiler supports them, so the tree builds with AOSP Clang.
 - Stock v30 DTB, boot header and command line. All drivers built in.
-- **The 25 stock vendor modules resolve all 730 of their kernel imports, and the 666 symbol CRCs they check match stock (666/666).**
+- **The 25 stock vendor modules resolve all 730 of their imports with matching CRCs: 666 from the kernel and 64 between the modules themselves.**
+- Outside drivers, only two core lines change: `kernel/time/time.c` records when Android last set the time zone (used by the outer-screen clock's DST), and `ACC_IBAT_ROWS` (battery, below).
 - CAT's module-signing certificate (RSA-4096, SHA-512) was extracted from the stock kernel and is in the keyring, so CAT's **25 signed audio and Wi‑Fi modules load untouched with signature enforcement on.**
 - 8 audio exports the stock modules need (FSA4480, AW8155, AW883xx) were reimplemented, with signatures recovered from the stock CRCs, so the stock audio modules link.
 
@@ -67,6 +73,7 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 - Rows are re-read after the IRQ is re-armed (the pinctrl-msm dual-edge emulation can miss an edge).
 - Idle = IRQ only, no polling.
 - The vendor driver's row "discharge" that gpiolib always refused is gone, and with it the log spam ("tried to set a GPIO tied to an IRQ as output", 3,565 lines per 2 s of typing).
+- Works with the stock DTBO (no DT change needed); the vendor matrix read (double read per row, discard of all-columns samples) is kept.
 - Tunable in `/sys/module/matrix_keypad/parameters/`: `press_ms`, `release_ms`, `row_pull` (0 none · 1 stock pull-down · 2 keeper), `fall_us`, plus the counters `rejected_taps`, `rearm_rescans`, `follow_fail`, `irq_no_key`.
 - **Tested on the phone:** 248 fast presses on 4/7 → 0 doubled or extra letters, 0 row IRQs while idle.
 - **Desk test:** ~490 real presses captured on the phone, each replayed in 62 phase/latency/jitter variants → 0 lost, 0 ghosts.
@@ -85,6 +92,8 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 - Backlight on for 8 s on lid close, volume or orange key.
 - **Lid open:** the outer screen is held off (no power vote, backlight 0) → no mirroring. Android frames are accepted but never sent over SPI.
 - S22Cover-style apps take it over cleanly by writing `s22_kclock/config` (their last frame + backlight). `s22_kclock.autonomous=0` disables the kernel clock.
+- With a cover app in control, the outer-screen backlight follows `lcd-backlight2` (not the lid), like stock.
+- Tunable in `/sys/module/s22_kclock/parameters/`: `autonomous`, `auto_h24` (24/12 h), `auto_bl_secs` (0 never, <0 always), `dst` (-1 auto · 0 off · 1 EU · 2 US), `config` (cover-app protocol). Also `mdss_spi_panel.s22_cover_stock_off` (on by default: lid-closed panel power-off like stock) and the counter `mdss_spi_display.s22_frames_dropped` (frames dropped by the SPI queue fix).
 - **Measured** (my LineageOS 20 build, stock vendor): 35.7 h with the lid closed, on battery → ~10.6 mA average, 0 SPI errors.
 - Stock bugs fixed in the SPI panel driver: mmap bug, RGBA8888 → RGB565 conversion, pluggable "dtv" panel for the stock compositor, no waiting for a TE pulse the panel never sends; `lcd-backlight2` writes now reach the outer screen; hang after closing the lid (corrupted SPI queue); lid-closed power-off matched to stock.
 
@@ -92,12 +101,13 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 
 Ported from public GPL kernels with the same parts, or written for this phone:
 
-- **Touchscreen** Chipsemi CHSC5448 (`chsc5xxx` v3.6.2, from the HelloVolla GPL kernel): all 84 stock symbols, 5 points, glove mode, ESD heartbeat; ignores the outer screen's framebuffer like stock. **The touch firmware is never reflashed** (boot-time update off).
-- **Speaker amp** AW881xx v1.9.0: stock ACF tuning selected by chip name like stock V1.8.0.2 (otherwise it stays silent); the first start reloads with I2S running and reads the DSP PID (fixes "dsp check fail"); calibration in `persist/aw_cali.bin`.
-- **USB‑C** `wusb3801` + **FSA4480**: 3/4-pole headphone detection over USB‑C.
+- **Touchscreen** Chipsemi CHSC5448 (`chsc5xxx` v3.6.2, from the HelloVolla GPL kernel): all 84 stock symbols, 5 points, glove mode, ESD heartbeat; ignores the outer screen's framebuffer like stock. **The touch firmware is never reflashed** (boot-time update off; the reference tree's firmware for another panel isn't included). Differences from stock: the `vdd`/`vio` supplies are enabled at probe (stock relied on other drivers), `/proc/touchscreen` nodes are 0666 instead of 0777, and the log is no longer at emergency level.
+- **Speaker amp** AW881xx v1.9.0 (AWINIC driver, unchanged import + S22 commits): stock ACF tuning selected by chip name (`aw88194` / `aw88194A`) like stock V1.8.0.2 (otherwise it stays silent); the first start reloads with I2S running and reads the DSP PID (fixes "dsp check fail"); calibration in `persist/aw_cali.bin`; hooked to the stock audio machine driver through `aw881xx_record_dai()`.
+- **USB‑C** `wusb3801` (WillSemi reference driver from the Crosscall Core-X4 GPL kernel, aligned with stock: same sysfs, reports the analog audio adapter to the `usb` supply) + **FSA4480** (CodeAurora msm-4.14 driver, plus the two CAT exports the stock audio modules call; probe returns "absent" if the chip doesn't answer): 3/4-pole headphone detection over USB‑C.
 - **AW8155** hearing-aid coil amp (modes set by EN pulses). **AW883xx:** handshake only (this unit has an AW88194).
-- **Keypad backlight** (recovered from the stock disassembly): on only when the lid is open and the main screen is on (`follow_lid`).
-- **AOSP 3.18 `switch` class**, needed by the Hall driver.
+- **Hall sensor** `hall_sensor` (Qualcomm driver from the Nokia 6300 4G / Tinno GPL kernels, aligned with stock): see [Lid](#lid-hall-sensor).
+- **Keypad backlight** (recovered from the stock disassembly): on only when the lid is open and the main screen is on (`follow_lid`; `follow_lid=N` leaves it to userspace).
+- **AOSP 3.18 `switch` class**, needed by the Hall driver; the only change is the class name `switch_hall`, as on stock.
 - **Battery:** `ACC_IBAT_ROWS` 4 → 6 to match the Q2805 cell profile.
 - **Not ported:** Goodix GT1X (not fitted on this phone).
 
