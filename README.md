@@ -139,7 +139,7 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 - 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
 - **Not tested:** IMS / VoLTE / VoWiFi ([#2](../../issues/2)) and CAT's stock Android 11 system.
 
-### On a GSI
+### On a GSI (i don't think higher android versions would bring any useful value, but spend more battery)
 
 Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). All works, even camera and 2nd screen.
 
