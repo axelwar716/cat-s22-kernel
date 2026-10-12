@@ -16,7 +16,7 @@ One file. Flash it. Ur apps and photos stay.
 
 - **Kernel (driver):** looked at the key once, while the contact was still bouncing, and basically flipped a coin → double letters. now it watches the key until it settles. one press = one letter.
 - **The circuit:** stock keeps every key row pulled down to ground. a worn key makes a weak contact and can't pull the row far enough to count as "pressed", so the tap dies. now the pull-down is off and the row gets driven low right before every read → soft taps count, no ghost presses.
-- **Android layer:** the keyboard asks the text box "what's before the cursor?" and some apps take a nap before answering. ur letter waits, gets bored, leaves.
+- **Android layer:** before typing each letter, the keyboard asks the app what's already written (new word? capital letter?). some apps take forever to answer, so ur letter waits, gets bored, leaves.
 - **The app:** stacked its own delay on top of all that, dropped letters when busy, and threw random spaces when its timer ran out. **TT9 S22** trusts the kernel (its own debounce off), keeps the multitap in its own memory and starts the timer from ur last real press.
 
 **Lid.** stock sent the lid as some random key android doesn't know, so android left it on read: it never knew if the flip was open or closed. now it's a real lid switch (`SW_LID`, the standard linux one), so any rom gets it with no patch. same image for every rom.
