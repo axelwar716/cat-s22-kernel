@@ -136,7 +136,6 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 
 ## Status
 
-- Running on my phone since 11 Oct 2026: my own LineageOS 20 build (not public) on the stock v30 vendor, flashed without wipe. Lid close/open and the outer-screen clock checked on the device; the keypad driver is the one I've typed on every day since 3 Oct. TT9 installs on the first boot and does nothing on the second.
 - 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
 - **Not tested:** IMS / VoLTE / VoWiFi ([#2](../../issues/2)) and CAT's stock Android 11 system.
 
