@@ -11,7 +11,7 @@ The only goal of this build is to be **stable**: fix the keypad and the other ba
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
 > **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work.
-> **Not tested on a GSI** either (see [On a GSI](#on-a-gsi)).
+> **Not tested on a GSI** (see [On a GSI](#on-a-gsi)) **or on CAT's stock Android 11 system.** I've only run it on my own LineageOS 20 build with the stock v30 vendor.
 
 ## Downloads
 
@@ -19,20 +19,20 @@ From [Releases → `stock-stable-4`](../../releases/tag/stock-stable-4):
 
 | File | What it is |
 |---|---|
-| `boot-s22-stock-stable-4-tt9en.img` | Kernel + Magisk 27.0 + TT9 S22 (English) — **recommended** |
-| `boot-s22-stock-stable-4.img` | Same kernel + Magisk 27.0, without TT9 |
-| `TT9S22-en.apk` | The TT9 S22 keyboard on its own |
+| `boot-s22-stock-stable-4-tt9en.img` | Kernel + Magisk 27.0 + TT9 S22 (English) — **the image to flash** |
+| `TT9S22-en.apk` | The same TT9 S22 keyboard on its own, to reinstall it after uninstalling |
 | `SHA256SUMS` | Checksums |
 
 ```
 bfb84f2d71a4f804bd03968451f70b33deb6090c54180d083ee65cb2efc26801  boot-s22-stock-stable-4-tt9en.img
-c11216b0afcf60379af82027f1ef1f00a90354368850fb8dd0e36af6427d5d3b  boot-s22-stock-stable-4.img
 95481d05f6d9ce87a01629fce0ef15ce8724eaf7e4c3e7ab8743f38d94f546ab  TT9S22-en.apk
 ```
 
+Don't want TT9? Uninstall it like any app: it won't be reinstalled on the next boot.
+
 ## Install
 
-Only `boot` is replaced: **no wipe**, your ROM and data stay as they are. Same image for LineageOS and GSIs.
+Only `boot` is replaced: **no wipe**, your ROM and data stay as they are. One image for every ROM. Needs an **unlocked bootloader**.
 
 1. **Back up your current `boot.img` first.**
 2. Flash:
@@ -53,7 +53,7 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 
 - Qualcomm 4.9 tree (`LA.UM.9.8.c26`), the stock `/proc/config.gz`, AOSP Clang 10.0.6 (`r377782d`). `uname -r` is still `4.9.227-perf`.
 - Stock v30 DTB, boot header and command line. All drivers built in.
-- **730/730 vendor symbol CRCs match stock.**
+- **The 25 stock vendor modules resolve all 730 of their kernel imports, and the 666 symbol CRCs they check match stock (666/666).**
 - CAT's module-signing certificate (RSA-4096, SHA-512) was extracted from the stock kernel and is in the keyring, so CAT's **25 signed audio and Wi‑Fi modules load untouched with signature enforcement on.**
 - 8 audio exports the stock modules need (FSA4480, AW8155, AW883xx) were reimplemented, with signatures recovered from the stock CRCs, so the stock audio modules link.
 
@@ -66,15 +66,16 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 - **Electrical change to the key rows, for better sensitivity.** Stock idles the rows low through the SoC pull-down. A light press on a worn dome has high contact resistance, forms a divider with that pull-down and never crosses the input threshold → no IRQ, lost tap. Now the pull-down is off (written straight to TLMM `GPIO_CFG`) and each row is actively driven low for 1 µs before every read and before the IRQ is re-armed → light taps register, no ghost presses. The pull-down is restored in suspend so a floating row can't wake the phone.
 - Rows are re-read after the IRQ is re-armed (the pinctrl-msm dual-edge emulation can miss an edge).
 - Idle = IRQ only, no polling.
-- The gpiolib log spam is gone (3,565 lines per 2 s of typing on stock).
+- The vendor driver's row "discharge" that gpiolib always refused is gone, and with it the log spam ("tried to set a GPIO tied to an IRQ as output", 3,565 lines per 2 s of typing).
 - Tunable in `/sys/module/matrix_keypad/parameters/`: `press_ms`, `release_ms`, `row_pull` (0 none · 1 stock pull-down · 2 keeper), `fall_us`, plus the counters `rejected_taps`, `rearm_rescans`, `follow_fail`, `irq_no_key`.
-- **Tested:** 248 fast presses on 4/7 → 0 doubles; ~500 real presses × 62 timing variants → 0 lost, 0 ghosts.
+- **Tested on the phone:** 248 fast presses on 4/7 → 0 doubled or extra letters, 0 row IRQs while idle.
+- **Desk test:** ~490 real presses captured on the phone, each replayed in 62 phase/latency/jitter variants → 0 lost, 0 ghosts.
 
 ### Lid (Hall sensor)
 
 - On stock, the lid sent key events that Android dropped, so **Android never knew whether the flip was open or closed.**
-- Now a real `SW_LID` is reported (1 = closed, the Linux/AOSP meaning) on an input device called `s22_lid`. Because of the new name, LineageOS's S22 hall patch (which inverts `hall_sensor`) can't double-invert it → **the same image works on every ROM.**
-- The `switch_hall` / `hall_switch` switch (1 = open) and `/dev/input/hall_dev` are kept for S22Cover. Scripts that looked for the input by the name `hall_sensor` should look for the phys `/dev/input/hall_dev` instead.
+- Now a real `SW_LID` is reported with the standard Linux/AOSP meaning (1 = closed) on an input device called `s22_lid`, so an AOSP framework or a GSI reads it with no patch. The new name also keeps an old framework patch that inverted `hall_sensor` (used in my LineageOS build) from inverting it twice → **the same image for every ROM.**
+- The `switch_hall` / `hall_switch` switch (1 = open) and `/dev/input/hall_dev` are kept for cover-screen apps (like S22Cover, my cover app, not part of this release). Scripts that looked for the input by the name `hall_sensor` should look for the phys `/dev/input/hall_dev` instead.
 - Stock's 300 ms busy-wait inside the IRQ handler → delayed work.
 
 ### Outer screen (128×128 SPI ST7789V2, `fb2`, `s22_kclock`)
@@ -84,7 +85,7 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 - Backlight on for 8 s on lid close, volume or orange key.
 - **Lid open:** the outer screen is held off (no power vote, backlight 0) → no mirroring. Android frames are accepted but never sent over SPI.
 - S22Cover-style apps take it over cleanly by writing `s22_kclock/config` (their last frame + backlight). `s22_kclock.autonomous=0` disables the kernel clock.
-- **Measured:** 35.7 h with the lid closed → ~10.6 mA average, 0 SPI errors.
+- **Measured** (my LineageOS 20 build, stock vendor): 35.7 h with the lid closed, on battery → ~10.6 mA average, 0 SPI errors.
 - Stock bugs fixed in the SPI panel driver: mmap bug, RGBA8888 → RGB565 conversion, pluggable "dtv" panel for the stock compositor, no waiting for a TE pulse the panel never sends; `lcd-backlight2` writes now reach the outer screen; hang after closing the lid (corrupted SPI queue); lid-closed power-off matched to stock.
 
 ### Drivers CAT didn't publish
@@ -104,7 +105,7 @@ Ported from public GPL kernels with the same parts, or written for this phone:
 
 A fork of [TT9](https://github.com/sspanak/tt9) v64.0 (English only, 3.8 MB, package `io.github.sspanak.tt9.s22`, versionCode 1652), tuned for this keypad. It coexists with the regular TT9.
 
-- Key-repeat guard off: it trusts the kernel's debounce.
+- TT9's own key debounce set to 0: it trusts the kernel's.
 - In-memory ABC multitap; the 800 ms multitap timer runs from your last real press.
 - IME threads keep foreground priority while the keyboard is hidden.
 - **Needs this kernel:** on the stock kernel the bouncing comes back.
@@ -119,8 +120,8 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 
 ## Status
 
-- Daily driver on LineageOS 20, flashed without wipe. TT9 installs on the first boot and does nothing on the second.
-- **Not tested:** IMS / VoLTE / VoWiFi, and any GSI.
+- Running on my phone since 11 Oct 2026: my own LineageOS 20 build (not public) on the stock v30 vendor, flashed without wipe. Lid close/open and the outer-screen clock checked on the device; the keypad driver is the one I've typed on every day since 3 Oct. TT9 installs on the first boot and does nothing on the second.
+- **Not tested:** IMS / VoLTE / VoWiFi, any GSI, and CAT's stock Android 11 system.
 
 ### On a GSI
 
