@@ -2,7 +2,7 @@
 
 > **Are u dumb like me? Read the [i missed school](README-SIMPLE.md) version.**
 
-**Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm developing on custom android, not base GSI. Anything in stock sucks**
+**Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm developing on custom android, more advanced custom kernel & custom vendor, not base GSI. Anything in stock sucks**
 
 A **stability-focused** kernel for the CAT S22 Flip (firmware v30, `4.9.227-perf`), shipped as a single boot image with Magisk 27.0 and the TT9 S22 keyboard.
 
