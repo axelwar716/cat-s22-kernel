@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright (C) 2026 cat-s22
+# SPDX-License-Identifier: GPL-2.0-only
 # Installs the TT9 S22 keyboard bundled in this boot image, once per version,
 # then deletes the bundled APK so it does not stay in RAM.
 # If the user uninstalls it, it is not installed again (marker file).

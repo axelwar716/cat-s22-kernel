@@ -1,3 +1,6 @@
+# Copyright (C) 2026 cat-s22
+# SPDX-License-Identifier: GPL-2.0-only
+
 service tt9-s22-install /system/bin/sh ${MAGISKTMP}/tt9-s22-install.sh
     user root
     seclabel u:r:magisk:s0

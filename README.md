@@ -110,7 +110,7 @@ A fork of [TT9](https://github.com/sspanak/tt9) v64.0 (English only, 3.8 MB, pac
 - IME threads keep foreground priority while the keyboard is hidden.
 - **Needs this kernel:** on the stock kernel the bouncing comes back.
 
-How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing. Log: `logcat -s tt9-s22`.
+How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing. Log: `logcat -s tt9-s22`. The copies here only add a license header comment; otherwise they are identical to the ones in the image.
 
 ### Root
 
