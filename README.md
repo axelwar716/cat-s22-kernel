@@ -1,5 +1,7 @@
 # CAT S22 Flip — kernel `stock-stable-4`
 
+**Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm dev with custom android, not basic GSI.**
+
 A **stability-focused** kernel for the CAT S22 Flip (firmware v30, `4.9.227-perf`), shipped as a single boot image with Magisk 27.0 and the TT9 S22 keyboard.
 
 ## Scope: stable first
