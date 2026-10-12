@@ -1,0 +1,148 @@
+From fa16a6ef2128a785055e79505ae93ec0f4a65c38 Mon Sep 17 00:00:00 2001
+From: cat-s22 <>
+Date: Sat, 10 Oct 2026 14:41:24 +0000
+Subject: [PATCH 4/5] tt9-s22 public: package io.github.sspanak.tt9.s22 (coexists with official TT9), name TT9 S22, ABC letter suggestions on by default; 64.0-s22.4-pub (1651)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ app/build.gradle                                              | 2 +-
+ app/src/main/AndroidManifest.xml                              | 4 ++--
+ .../sspanak/tt9/preferences/settings/SettingsTyping.java      | 2 +-
+ app/src/main/res/values/strings.xml                           | 4 ++--
+ app/src/main/res/xml/prefs.xml                                | 4 ++--
+ app/src/main/res/xml/prefs_screen_debug.xml                   | 4 ++--
+ app/src/main/res/xml/prefs_screen_mode_abc.xml                | 2 +-
+ app/version-tools.gradle                                      | 4 ++--
+ 8 files changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/app/build.gradle b/app/build.gradle
+index 595ea4bd..acb7d1c9 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -158,7 +158,7 @@ android {
+ 	compileSdk = 37
+ 
+ 	defaultConfig {
+-		applicationId = PACKAGE_NAME
++		applicationId = PACKAGE_NAME + ".s22"
+ 		buildFeatures.buildConfig = true
+ 		minSdk = 24
+ 		targetSdk = 37
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index f4740675..5daba2fd 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:tools="http://schemas.android.com/tools"
+-	android:versionCode="1649"
+-	android:versionName="64.0-s22.2"
++	android:versionCode="1651"
++	android:versionName="64.0-s22.4-pub"
+ 	xmlns:android="http://schemas.android.com/apk/res/android">
+ 
+ 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/> <!-- allows displaying notifications on Android >= 13 -->
+diff --git a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsTyping.java b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsTyping.java
+index 226f58ae..14517241 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsTyping.java
++++ b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsTyping.java
+@@ -101,7 +101,7 @@ class SettingsTyping extends SettingsMindReading {
+ 
+ 	public boolean getShowSuggestions() {
+ 		final int inputMode = getInputMode();
+-		final boolean showInAbc = prefs.getBoolean("show_suggestions_abc", false);
++		final boolean showInAbc = prefs.getBoolean("show_suggestions_abc", true);
+ 
+ 		return inputMode != InputMode.MODE_ABC || showInAbc;
+ 	}
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index a741960b..a5fd4bbb 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-	<string name="app_name" translatable="false">Traditional T9</string>
+-	<string name="app_name_short" translatable="false">TT9</string>
++	<string name="app_name" translatable="false">Traditional T9 S22</string>
++	<string name="app_name_short" translatable="false">TT9 S22</string>
+ 	<string name="dictionary_url" translatable="false">https://raw.githubusercontent.com/sspanak/tt9/%1$s/downloads/%2$s</string>
+ 	<string name="system_night_mode" translatable="false">n</string>
+ 
+diff --git a/app/src/main/res/xml/prefs.xml b/app/src/main/res/xml/prefs.xml
+index c2c35b24..bc99995e 100644
+--- a/app/src/main/res/xml/prefs.xml
++++ b/app/src/main/res/xml/prefs.xml
+@@ -8,7 +8,7 @@
+ 		app:title="@string/pref_help">
+ 		<intent
+ 			android:action="android.intent.action.VIEW"
+-			android:targetPackage="io.github.sspanak.tt9"
++			android:targetPackage="io.github.sspanak.tt9.s22"
+ 			android:targetClass="io.github.sspanak.tt9.preferences.HelpActivity" />
+ 	</Preference>
+ 
+@@ -46,7 +46,7 @@
+ 			app:summary="@string/english_only">
+ 			<intent
+ 				android:action="android.intent.action.VIEW"
+-				android:targetPackage="io.github.sspanak.tt9"
++				android:targetPackage="io.github.sspanak.tt9.s22"
+ 				android:targetClass="io.github.sspanak.tt9.preferences.PrivacyPolicyActivity" />
+ 		</Preference>
+ 
+diff --git a/app/src/main/res/xml/prefs_screen_debug.xml b/app/src/main/res/xml/prefs_screen_debug.xml
+index 063d52f7..15012946 100644
+--- a/app/src/main/res/xml/prefs_screen_debug.xml
++++ b/app/src/main/res/xml/prefs_screen_debug.xml
+@@ -11,7 +11,7 @@
+ 		app:title="Test Input">
+ 		<intent
+ 			android:action="android.intent.action.VIEW"
+-			android:targetPackage="io.github.sspanak.tt9"
++			android:targetPackage="io.github.sspanak.tt9.s22"
+ 			android:targetClass="io.github.sspanak.tt9.preferences.screens.debug.TestInputActivity" />
+ 	</Preference>
+ 
+@@ -45,7 +45,7 @@
+ 			app:title="Recent Log Messages...">
+ 			<intent
+ 				android:action="android.intent.action.VIEW"
+-				android:targetPackage="io.github.sspanak.tt9"
++				android:targetPackage="io.github.sspanak.tt9.s22"
+ 				android:targetClass="io.github.sspanak.tt9.preferences.LogsActivity" />
+ 		</Preference>
+ 	</PreferenceCategory>
+diff --git a/app/src/main/res/xml/prefs_screen_mode_abc.xml b/app/src/main/res/xml/prefs_screen_mode_abc.xml
+index eb496897..99d304d1 100644
+--- a/app/src/main/res/xml/prefs_screen_mode_abc.xml
++++ b/app/src/main/res/xml/prefs_screen_mode_abc.xml
+@@ -20,7 +20,7 @@
+ 		android:title="@string/pref_auto_capitals_after_newline" />
+ 
+ 	<SwitchPreferenceCompat
+-		android:defaultValue="false"
++		android:defaultValue="true"
+ 		android:key="show_suggestions_abc"
+ 		android:summary="@string/pref_show_suggestions_abc_summary"
+ 		android:title="@string/pref_show_suggestions_abc" />
+diff --git a/app/version-tools.gradle b/app/version-tools.gradle
+index 99fe5cd1..b7b42dd6 100644
+--- a/app/version-tools.gradle
++++ b/app/version-tools.gradle
+@@ -40,8 +40,8 @@ ext.exec = { command ->
+ }
+ 
+ // tt9-s22: fixed fork version (upstream v64.0 = versionCode 1645)
+-static def s22VersionName() { return "64.0-s22.3" }
+-static def s22VersionCode() { return 1650 }
++static def s22VersionName() { return "64.0-s22.4-pub" }
++static def s22VersionCode() { return 1651 }
+ 
+ ext.getVersionName = { ->
+ 	return s22VersionName()
+-- 
+2.34.1
+

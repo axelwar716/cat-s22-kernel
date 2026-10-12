@@ -1,0 +1,243 @@
+From 24046a4b66b300b5b6cde8d3dd817b17c553cd1f Mon Sep 17 00:00:00 2001
+From: cat-s22 <>
+Date: Sat, 3 Oct 2026 21:24:36 +0000
+Subject: [PATCH 3/5] tt9-s22: keyboard threads at foreground-app priority; version 64.0-s22.3 (1650)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+system_server binds the IME without BIND_SCHEDULE_LIKE_TOP_APP while it is hidden,
+so the process stays in the background group at nice 0 while the app being opened
+runs at -10. When the keyboard hides, ActivityManager resets main to 0 and
+RenderThread to -4, so the start of every input field (before it is shown) always
+ran at low priority.
+
+- ThreadPriority.boostUiThreads(): main and RenderThread to -10 (= TOP_APP_PRIORITY_BOOST)
+  in onCreate, on every onStartInput, when shown and 0.5 s and 2 s after hiding.
+- Maintenance tasks (persisting MindReader, saving pairs, normalizing) at
+  THREAD_PRIORITY_BACKGROUND, then back to the previous priority of the pool thread.
+---
+ .../github/sspanak/tt9/ime/KeyPadHandler.java |   2 +
+ .../github/sspanak/tt9/ime/TraditionalT9.java |  26 ++++-
+ .../sspanak/tt9/util/sys/ThreadPriority.java  | 103 ++++++++++++++++++
+ app/version-tools.gradle                      |   4 +-
+ 4 files changed, 131 insertions(+), 4 deletions(-)
+ create mode 100644 app/src/main/java/io/github/sspanak/tt9/util/sys/ThreadPriority.java
+
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
+index 7687bf37..4d974e96 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
+@@ -5,6 +5,7 @@ import android.view.KeyEvent;
+ import io.github.sspanak.tt9.ime.helpers.Key;
+ import io.github.sspanak.tt9.preferences.screens.debug.DropDownInputHandlingMode;
+ import io.github.sspanak.tt9.preferences.settings.SettingsStore;
++import io.github.sspanak.tt9.util.sys.ThreadPriority;
+ 
+ 
+ abstract class KeyPadHandler extends UiHandler {
+@@ -25,6 +26,7 @@ abstract class KeyPadHandler extends UiHandler {
+ 	@Override
+ 	public void onCreate() {
+ 		super.onCreate();
++		ThreadPriority.boostUiThreads(); // tt9-s22
+ 		settings = new SettingsStore(getApplicationContext());
+ 
+ 		onInit();
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/TraditionalT9.java b/app/src/main/java/io/github/sspanak/tt9/ime/TraditionalT9.java
+index ed30e48f..af67d961 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/TraditionalT9.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/TraditionalT9.java
+@@ -22,6 +22,7 @@ import io.github.sspanak.tt9.util.Logger;
+ import io.github.sspanak.tt9.util.SupremeExecutor;
+ import io.github.sspanak.tt9.util.sys.DeviceInfo;
+ import io.github.sspanak.tt9.util.sys.SystemSettings;
++import io.github.sspanak.tt9.util.sys.ThreadPriority;
+ 
+ public class TraditionalT9 extends PremiumHandler {
+ 	private static final String LOG_TAG = "MAIN";
+@@ -31,6 +32,7 @@ public class TraditionalT9 extends PremiumHandler {
+ 	@NonNull private final Handler backgroundTasks = new Handler(Looper.getMainLooper());
+ 	@NonNull private final Handler zombieDetector = new Handler(Looper.getMainLooper());
+ 	@NonNull private final Handler heartbeatDetector = new Handler(Looper.getMainLooper());
++	@NonNull private final Handler priorityHandler = new Handler(Looper.getMainLooper()); // tt9-s22
+ 	private boolean isDead = false;
+ 	private int zombieChecks = 0;
+ 
+@@ -65,6 +67,7 @@ public class TraditionalT9 extends PremiumHandler {
+ 
+ 	@Override
+ 	public void onStartInput(EditorInfo inputField, boolean restarting) {
++		ThreadPriority.boostUiThreads(); // tt9-s22
+ 		Logger.i(
+ 			LOG_TAG,
+ 			"===> Start Up; packageName: " + inputField.packageName + " inputType: " + inputField.inputType + " actionId: " + inputField.actionId + " imeOptions: " + inputField.imeOptions + " privateImeOptions: " + inputField.privateImeOptions + " extras: " + inputField.extras
+@@ -79,6 +82,25 @@ public class TraditionalT9 extends PremiumHandler {
+ 	}
+ 
+ 
++	@Override
++	public void onWindowShown() {
++		super.onWindowShown();
++		// tt9-s22: after the frame that creates it, so the RenderThread already exists
++		priorityHandler.removeCallbacksAndMessages(null);
++		priorityHandler.post(ThreadPriority::boostUiThreads);
++	}
++
++
++	@Override
++	public void onWindowHidden() {
++		super.onWindowHidden();
++		// tt9-s22: ActivityManager resets our priority shortly after the keyboard hides
++		priorityHandler.removeCallbacksAndMessages(null);
++		priorityHandler.postDelayed(ThreadPriority::boostUiThreads, 500);
++		priorityHandler.postDelayed(ThreadPriority::boostUiThreads, 2000);
++	}
++
++
+ 	@Override
+ 	public void onFinishInputView(boolean finishingInput) {
+ 		super.onFinishInputView(finishingInput);
+@@ -341,13 +363,13 @@ public class TraditionalT9 extends PremiumHandler {
+ 
+ 
+ 	private void runBackgroundTasks() {
+-		SupremeExecutor.submit(() -> {
++		SupremeExecutor.submit(() -> ThreadPriority.runInBackground(() -> {
+ 			mindReader.persist();
+ 			voiceInputOps.forceAlternativeInput(false).enableOfflineMode();
+ 			if (!DictionaryLoader.isRunning()) {
+ 				DataStore.saveWordPairs();
+ 				DataStore.normalizeNext();
+ 			}
+-		});
++		}));
+ 	}
+ }
+diff --git a/app/src/main/java/io/github/sspanak/tt9/util/sys/ThreadPriority.java b/app/src/main/java/io/github/sspanak/tt9/util/sys/ThreadPriority.java
+new file mode 100644
+index 00000000..31fa10b4
+--- /dev/null
++++ b/app/src/main/java/io/github/sspanak/tt9/util/sys/ThreadPriority.java
+@@ -0,0 +1,103 @@
++package io.github.sspanak.tt9.util.sys;
++
++import android.os.Process;
++
++import androidx.annotation.NonNull;
++
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.FileReader;
++
++import io.github.sspanak.tt9.util.Logger;
++
++/**
++ * tt9-s22: system_server binds the keyboard without BIND_SCHEDULE_LIKE_TOP_APP, so Android keeps
++ * our process in the "background" scheduling group with all threads at nice 0, while the app
++ * being typed in (or being opened) runs its UI and render threads at nice -10. When the CPU is
++ * busy, for example while an app is starting, key handling and drawing the suggestion bar get
++ * only a small share of it and typing stalls.
++ * While the keyboard is visible, Android does schedule it like the top app, but as soon as it
++ * hides, ActivityManager resets the main thread to 0 and the RenderThread to -4. So, starting
++ * input in a new field, which happens before the keyboard is shown, always runs at low priority.
++ * Our UI and render threads get the same priority as the foreground app, no matter which app
++ * is on top, and we restore it after Android resets it. They sleep unless a key is being
++ * processed, so this costs nothing when not typing. Maintenance tasks, on the other hand, run
++ * below everything else.
++ */
++public class ThreadPriority {
++	private static final String LOG_TAG = ThreadPriority.class.getSimpleName();
++
++	/** Same as ActivityManager's TOP_APP_PRIORITY_BOOST for the UI and render threads of the top app. */
++	private static final int INTERACTIVE = -10;
++
++	private static int renderThreadId = 0;
++
++
++	/**
++	 * Call on the main thread. The RenderThread only exists after the first window has been drawn,
++	 * so until then only the main thread is boosted. Threads that already have the right priority
++	 * are skipped, so this is cheap enough to call on every input field.
++	 */
++	public static void boostUiThreads() {
++		boost(Process.myTid(), "main");
++
++		if (renderThreadId == 0) {
++			renderThreadId = findThread("RenderThread");
++		}
++		if (renderThreadId > 0 && !boost(renderThreadId, "RenderThread")) {
++			renderThreadId = 0;
++		}
++	}
++
++
++	private static boolean boost(int tid, @NonNull String name) {
++		try {
++			return Process.getThreadPriority(tid) == INTERACTIVE || set(tid, INTERACTIVE, name);
++		} catch (Exception e) {
++			return false;
++		}
++	}
++
++
++	private static int findThread(@NonNull String name) {
++		final File[] tasks = new File("/proc/self/task").listFiles();
++		if (tasks == null) {
++			return 0;
++		}
++
++		for (File task : tasks) {
++			try (BufferedReader reader = new BufferedReader(new FileReader(new File(task, "comm")))) {
++				if (name.equals(reader.readLine())) {
++					return Integer.parseInt(task.getName());
++				}
++			} catch (Exception ignored) {}
++		}
++
++		return 0;
++	}
++
++
++	/** Runs the task on the current thread at background priority, then restores the previous one. */
++	public static void runInBackground(@NonNull Runnable task) {
++		final int tid = Process.myTid();
++		final int previous = Process.getThreadPriority(tid);
++		set(tid, Process.THREAD_PRIORITY_BACKGROUND, "maintenance");
++		try {
++			task.run();
++		} finally {
++			set(tid, previous, "maintenance");
++		}
++	}
++
++
++	private static boolean set(int tid, int priority, @NonNull String name) {
++		try {
++			Process.setThreadPriority(tid, priority);
++			Logger.d(LOG_TAG, "Thread " + name + " (" + tid + ") priority: " + priority);
++			return true;
++		} catch (Exception e) {
++			Logger.w(LOG_TAG, "Could not set priority " + priority + " for thread " + name + " (" + tid + "). " + e.getMessage());
++			return false;
++		}
++	}
++}
+diff --git a/app/version-tools.gradle b/app/version-tools.gradle
+index b1a13dda..99fe5cd1 100644
+--- a/app/version-tools.gradle
++++ b/app/version-tools.gradle
+@@ -40,8 +40,8 @@ ext.exec = { command ->
+ }
+ 
+ // tt9-s22: fixed fork version (upstream v64.0 = versionCode 1645)
+-static def s22VersionName() { return "64.0-s22.2" }
+-static def s22VersionCode() { return 1649 }
++static def s22VersionName() { return "64.0-s22.3" }
++static def s22VersionCode() { return 1650 }
+ 
+ ext.getVersionName = { ->
+ 	return s22VersionName()
+-- 
+2.34.1
+

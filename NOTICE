@@ -1,0 +1,22 @@
+CAT S22 Flip stock-stable kernel
+Copyright (C) 2026 cat-s22
+
+What is covered by what:
+
+- Kernel (branch stock-stable-4): GPL-2.0, see LICENSE. It is a derived work
+  of Linux and the Qualcomm msm-4.9 kernel, with drivers from The Linux
+  Foundation, Google, AWINIC, Chipsemi and WillSemi; their copyright notices
+  stay in each file. The CAT S22 Flip work is Copyright (C) 2026 cat-s22 and
+  is marked in the files it wrote or changed.
+- This README and ramdisk/overlay.d: Copyright (C) 2026 cat-s22, GPL-2.0
+  (see LICENSE).
+- TT9 S22 (tt9/ and TT9S22-en.apk in the release): a modified Traditional T9
+  v64.0, Copyright Dimo Karaivanov and the TT9 contributors, Apache-2.0. The
+  S22 changes are Copyright (C) 2026 cat-s22, also Apache-2.0. See tt9/NOTICE.
+- Magisk 27.0 (in the boot image): Copyright John Wu, GPL-3.0.
+  Source: https://github.com/topjohnwu/Magisk/tree/v27.0
+- The outer-screen clock font is generated from Roboto Regular (Apache-2.0,
+  Google).
+
+"CAT" and "CAT S22 Flip" are trademarks of their owners and are only used to
+say which phone this is for.

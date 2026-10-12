@@ -1,0 +1,371 @@
+From 8b5f1fa8602e38a1a33c9cde06bc1138c9c58e60 Mon Sep 17 00:00:00 2001
+From: cat-s22 <>
+Date: Sat, 3 Oct 2026 10:42:53 +0000
+Subject: [PATCH 1/5] tt9-s22: reliable input on the CAT S22 Flip (debounce 0, multitap without editor queries, synchronous ABC suggestions, timer from the last key press)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ app/src/main/AndroidManifest.xml              |  4 +--
+ .../github/sspanak/tt9/ime/KeyPadHandler.java | 29 +++++++++++++------
+ .../sspanak/tt9/ime/SuggestionHandler.java    | 18 ++++++++++--
+ .../github/sspanak/tt9/ime/TypingHandler.java | 27 +++++++++++++++--
+ .../tt9/ime/helpers/InputConnectionAsync.java |  5 +++-
+ .../tt9/ime/helpers/SuggestionOps.java        | 19 +++++++++++-
+ .../tt9/ime/modes/helpers/AutoSpace.java      |  4 ++-
+ .../preferences/settings/SettingsHacks.java   |  4 ++-
+ app/src/main/res/values-es/strings.xml        |  2 +-
+ app/src/main/res/values/strings.xml           |  2 +-
+ app/version-tools.gradle                      | 11 ++++---
+ 11 files changed, 100 insertions(+), 25 deletions(-)
+
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index b2e229b5..e28752f3 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:tools="http://schemas.android.com/tools"
+-	android:versionCode="1645"
+-	android:versionName="64.0"
++	android:versionCode="1646"
++	android:versionName="64.0-s22.1"
+ 	xmlns:android="http://schemas.android.com/apk/res/android">
+ 
+ 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/> <!-- allows displaying notifications on Android >= 13 -->
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
+index c931bd46..7687bf37 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/KeyPadHandler.java
+@@ -5,13 +5,9 @@ import android.view.KeyEvent;
+ import io.github.sspanak.tt9.ime.helpers.Key;
+ import io.github.sspanak.tt9.preferences.screens.debug.DropDownInputHandlingMode;
+ import io.github.sspanak.tt9.preferences.settings.SettingsStore;
+-import io.github.sspanak.tt9.util.Timer;
+ 
+ 
+ abstract class KeyPadHandler extends UiHandler {
+-	// debounce handling
+-	private final static String DEBOUNCE_TIMER = "debounce_";
+-
+ 	// temporal key handling
+ 	private int ignoreNextKeyUp = 0;
+ 
+@@ -69,6 +65,9 @@ abstract class KeyPadHandler extends UiHandler {
+ 
+ 		// start tracking key hold
+ 		if (Key.isNumber(keyCode)) {
++			// tt9-s22: the auto-accept timer must count from the last real key press. Holding the
++			// key down must not let the timer expire between DOWN and UP.
++			onNumberKeyDown();
+ 			event.startTracking();
+ 			return true;
+ 		}
+@@ -190,6 +189,9 @@ abstract class KeyPadHandler extends UiHandler {
+ 	}
+ 
+ 
++	protected void onNumberKeyDown() {}
++
++
+ 	public void resetKeyRepeat() {
+ 		numKeyRepeatCounter = 0;
+ 		keyRepeatCounter = 0;
+@@ -198,19 +200,28 @@ abstract class KeyPadHandler extends UiHandler {
+ 	}
+ 
+ 
++	/**
++	 * tt9-s22: the debounce window is measured between the event timestamps assigned by the kernel/
++	 * InputReader (event.getEventTime()), not between the moments we process the events. Otherwise,
++	 * when the main thread is briefly blocked (e.g. by a slow editor), queued key events are
++	 * processed back-to-back and real key presses get discarded.
++	 */
++	private final android.util.SparseArray<Long> lastKeyUpTime = new android.util.SparseArray<>();
++
+ 	private boolean debounceKey(int keyCode, KeyEvent event) {
+-		if (settings.getKeyPadDebounceTime() <= 0 || event.isLongPress()) {
++		final int debounceTime = settings.getKeyPadDebounceTime();
++		if (debounceTime <= 0 || event.isLongPress()) {
+ 			return false;
+ 		}
+ 
+-		String keyTimer = DEBOUNCE_TIMER + keyCode;
+-
+-		if (Timer.get(keyTimer) > 0 && Timer.get(keyTimer) < settings.getKeyPadDebounceTime()) {
++		final Long lastUp = lastKeyUpTime.get(keyCode);
++		final long elapsed = lastUp == null ? Long.MAX_VALUE : event.getEventTime() - lastUp;
++		if (elapsed >= 0 && elapsed < debounceTime) {
+ 			return true;
+ 		}
+ 
+ 		if (event.getAction() == KeyEvent.ACTION_UP) {
+-			Timer.start(keyTimer);
++			lastKeyUpTime.put(keyCode, event.getEventTime());
+ 		}
+ 
+ 		return false;
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
+index d35d76ad..ed0118aa 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
+@@ -14,6 +14,7 @@ import java.util.ArrayList;
+ import io.github.sspanak.tt9.R;
+ import io.github.sspanak.tt9.db.words.DictionaryLoader;
+ import io.github.sspanak.tt9.ime.helpers.SuggestionOps;
++import io.github.sspanak.tt9.ime.helpers.InputConnectionAsync;
+ import io.github.sspanak.tt9.ime.modes.InputModeKind;
+ import io.github.sspanak.tt9.ui.UI;
+ import io.github.sspanak.tt9.util.Text;
+@@ -64,9 +65,14 @@ abstract public class SuggestionHandler extends TypingHandler {
+ 
+ 		suggestionOps.commitCurrent(false, true);
+ 		mInputMode.onAcceptSuggestion(lastWord, true);
++
++		// tt9-s22: in ABC mode, the text around the cursor was already read for this key press, and
++		// committing the composing letter does not change it, so reuse it instead of a 2nd blocking query.
++		final String[] cached = InputModeKind.isABC(mInputMode) && abcSurroundingChars != null && !InputConnectionAsync.TIMEOUT_SENTINEL.equals(abcSurroundingChars[0]) ? abcSurroundingChars : null;
++		abcSurroundingChars = null;
+ 		final String[] surroundingText = autoCorrectSpace(
+ 			lastWord,
+-			textField.getSurroundingStringForAutoAssistance(settings, mInputMode),
++			cached != null ? cached : textField.getSurroundingStringForAutoAssistance(settings, mInputMode),
+ 			false,
+ 			mInputMode.getFirstKey()
+ 		);
+@@ -147,7 +153,15 @@ abstract public class SuggestionHandler extends TypingHandler {
+ 	protected void handleSuggestionsAsync(double loadingId, @Nullable Runnable onComplete) {
+ 		final Handler handler = getAsyncHandler();
+ 		handler.removeCallbacksAndMessages(null);
+-		handler.post(() -> handleSuggestions(loadingId, onComplete));
++
++		// tt9-s22: ABC mode computes its letters synchronously on the main thread. Posting the result
++		// for later allowed two queued key presses to be processed before it ran, and since the
++		// pending post is removed above, the first letter was lost ("the key did nothing").
++		if (InputModeKind.isABC(mInputMode) && Looper.myLooper() == Looper.getMainLooper()) {
++			handleSuggestions(loadingId, onComplete);
++		} else {
++			handler.post(() -> handleSuggestions(loadingId, onComplete));
++		}
+ 	}
+ 
+ 
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/TypingHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/TypingHandler.java
+index 8a23d83f..106a56c7 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/TypingHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/TypingHandler.java
+@@ -44,6 +44,7 @@ public abstract class TypingHandler extends KeyPadHandler {
+ 	@NonNull protected CmdSuggestionPrevious cmdPreviousSuggestion = new CmdSuggestionPrevious();
+ 
+ 	@Nullable private Handler shiftStateDebounceHandler;
++	@Nullable protected String[] abcSurroundingChars = null; // tt9-s22: editor text read on the current key press
+ 
+ 	// input
+ 	@NonNull protected ArrayList<Integer> allowedInputModes = new ArrayList<>();
+@@ -216,7 +217,13 @@ public abstract class TypingHandler extends KeyPadHandler {
+ 		suggestionOps.cancelDelayedAccept();
+ 
+ 		hold = hold && settings.getHoldToType();
+-		String[] surroundingChars = textField.getSurroundingStringForAutoAssistance(settings, mInputMode);
++
++		// tt9-s22: when cycling the letters of the same key in ABC mode (multitap), the whole state
++		// (key, letter index, timer) lives in memory and the new letter only replaces the composing
++		// text. There is nothing to auto-space or auto-capitalize, so we must not query the editor:
++		// in slow apps that query blocks the main thread and makes key presses pile up.
++		final boolean isMultitapCycle = !hold && repeat > 0 && InputModeKind.isABC(mInputMode) && !suggestionOps.isEmpty();
++		String[] surroundingChars = isMultitapCycle ? new String[] {"", ""} : textField.getSurroundingStringForAutoAssistance(settings, mInputMode);
+ 		String lastWord = null;
+ 
+ 		// Automatically accept the previous word, when the next one is a space or punctuation,
+@@ -234,8 +241,15 @@ public abstract class TypingHandler extends KeyPadHandler {
+ 			mindReader.setContext(mInputMode, mLanguage, surroundingChars, lastWord);
+ 		}
+ 
++		// tt9-s22: remember what we have just read, so that accepting the previous letter in ABC mode
++		// does not query the editor a second time for the same key press.
++		abcSurroundingChars = isMultitapCycle ? null : surroundingChars;
++
+ 		// Auto-adjust the text case before each word/char, if the InputMode supports it.
+-		mInputMode.determineNextWordTextCase(surroundingChars[0], key);
++		// (Not in the middle of a multitap cycle: the letter case must stay the same.)
++		if (!isMultitapCycle) {
++			mInputMode.determineNextWordTextCase(surroundingChars[0], key);
++		}
+ 
+ 		if (!mInputMode.onNumber(key, hold, repeat, surroundingChars)) {
+ 			forceShowWindow();
+@@ -251,11 +265,20 @@ public abstract class TypingHandler extends KeyPadHandler {
+ 			autoCompleteOnNumber(loadingId, surroundingChars, lastWord, key);
+ 			getSuggestions(loadingId, null, null);
+ 		}
++		abcSurroundingChars = null;
+ 
+ 		return true;
+ 	}
+ 
+ 
++	@Override
++	protected void onNumberKeyDown() {
++		if (InputModeKind.isABC(mInputMode)) {
++			suggestionOps.postponeDelayedAccept();
++		}
++	}
++
++
+ 	public boolean onText(String text, boolean validateOnly) {
+ 		if (mInputMode.shouldIgnoreText(text)) {
+ 			return false;
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
+index 9d2ac118..f8cff775 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
+@@ -57,7 +57,10 @@ public class InputConnectionAsync {
+ 
+ 	private static ExecutorService getExecutor() {
+ 		if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+-			executor = Executors.newSingleThreadExecutor();
++			// tt9-s22: a cached pool instead of a single thread. When the editor does not answer,
++			// the timed-out binder call keeps occupying its thread; with a single thread every
++			// following query queued behind it and timed out too (cascading 50 ms main-thread stalls).
++			executor = Executors.newCachedThreadPool();
+ 		}
+ 
+ 		return executor;
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/SuggestionOps.java b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/SuggestionOps.java
+index 51c4aa0b..cb928c5d 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/SuggestionOps.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/SuggestionOps.java
+@@ -26,6 +26,7 @@ import io.github.sspanak.tt9.util.sys.Clipboard;
+ public class SuggestionOps {
+ 	@NonNull private final Handler delayedAcceptHandler;
+ 	@NonNull private final Consumer<String> onDelayedAccept;
++	private int pendingAcceptDelay = 0;
+ 
+ 	@Nullable protected SuggestionsBar suggestionBar;
+ 	@Nullable private AppHacks appHacks;
+@@ -287,14 +288,30 @@ public class SuggestionOps {
+ 			onDelayedAccept.accept(acceptCurrent());
+ 			return true;
+ 		} else if (delay > 0) {
+-			delayedAcceptHandler.postDelayed(() -> onDelayedAccept.accept(acceptCurrent()), delay);
++			pendingAcceptDelay = delay;
++			delayedAcceptHandler.postDelayed(() -> {
++				pendingAcceptDelay = 0;
++				onDelayedAccept.accept(acceptCurrent());
++			}, delay);
+ 		}
+ 
+ 		return false;
+ 	}
+ 
+ 
++	/**
++	 * tt9-s22: restart a pending auto-accept timer (if any), so that it counts from the latest real
++	 * key press (key down), instead of from the moment the previous key was processed.
++	 */
++	public void postponeDelayedAccept() {
++		if (pendingAcceptDelay > 0) {
++			scheduleDelayedAccept(pendingAcceptDelay);
++		}
++	}
++
++
+ 	public void cancelDelayedAccept() {
++		pendingAcceptDelay = 0;
+ 		delayedAcceptHandler.removeCallbacksAndMessages(null);
+ 	}
+ 
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/modes/helpers/AutoSpace.java b/app/src/main/java/io/github/sspanak/tt9/ime/modes/helpers/AutoSpace.java
+index f7f61aa4..134c9807 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/modes/helpers/AutoSpace.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/modes/helpers/AutoSpace.java
+@@ -70,8 +70,10 @@ public class AutoSpace {
+ 
+ 		// If the InputConnection timed out, assume we are right after a word and we want a space.
+ 		// It should be the more convenient option.
++		// tt9-s22: except in ABC mode, where a letter is accepted on every key change. Guessing
++		// "space" there inserts spaces between the letters of a word in slow apps ("H ol a").
+ 		if (previousChars.equals(InputConnectionAsync.TIMEOUT_SENTINEL)) {
+-			return true;
++			return !InputModeKind.isABC(mode);
+ 		}
+ 
+ 		final Text nextText = new Text(language, nextChars);
+diff --git a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsHacks.java b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsHacks.java
+index 50faf15d..145055d5 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsHacks.java
++++ b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsHacks.java
+@@ -77,7 +77,9 @@ class SettingsHacks extends SettingsAddedWords {
+ 	 * and on <a href="https://github.com/sspanak/tt9/issues/399">CAT S22</a>.
+ 	 */
+ 	public int getKeyPadDebounceTime() {
+-		int defaultTime = DeviceInfo.IS_CAT_S22_FLIP ? 50 : 0;
++		// tt9-s22: the S22 Flip kernel (matrix_keypad v8+) already debounces the keypad
++		// (25 ms closed to press, 30 ms open to release), so the IME must not drop any events.
++		int defaultTime = 0;
+ 		defaultTime = DeviceInfo.IS_QIN_F21 ? 20 : defaultTime;
+ 		return getStringifiedInt(DropDownKeyPadDebounceTime.NAME, defaultTime);
+ 	}
+diff --git a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+index bde89809..5f81ecca 100644
+--- a/app/src/main/res/values-es/strings.xml
++++ b/app/src/main/res/values-es/strings.xml
+@@ -177,7 +177,7 @@
+ 	<string name="pref_hack_always_on_top_summary">No permitir que otras aplicaciones cubran %1$s o lo empujen fuera de la pantalla.</string>
+ 	<string name="pref_hack_auto_disable_composing_summary">Desactivar automáticamente la composición de texto cuando una app causa problemas de escritura.</string>
+ 	<string name="pref_hack_key_pad_debounce_time">Protección contra la repetición accidental de teclas</string>
+-	<string name="pref_hack_key_pad_debounce_off">Apagado</string>
++	<string name="pref_hack_key_pad_debounce_off">Apagado (el kernel del CAT S22 ya filtra el rebote)</string>
+ 	<string name="dictionary_export_finished">Exportación completada</string>
+ 	<string name="dictionary_export_finished_more_info">Palabras exportadas a: \"%1$s\".</string>
+ 	<string name="dictionary_export_generating_csv">Exportando CSV…</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 7e4a6467..a741960b 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -125,7 +125,7 @@
+ 	<string name="pref_hack_auto_disable_composing">Automatically Disable Composing Text</string>
+ 	<string name="pref_hack_auto_disable_composing_summary">Automatically disable composing text when an app causes typing issues.</string>
+ 	<string name="pref_hack_key_pad_debounce_time">Accidental Key Repeat Protection</string>
+-	<string name="pref_hack_key_pad_debounce_off">Off</string>
++	<string name="pref_hack_key_pad_debounce_off">Off (the CAT S22 kernel already filters key bounce)</string>
+ 	<string name="pref_haptic_feedback">Vibration</string>
+ 	<string name="pref_haptic_feedback_summary">Vibrate when a virtual key is pressed. (Not possible on all devices)</string>
+ 	<string name="pref_haptic_feedback_problematic_summary">Vibration may cause crashes on your device. Enable at your own risk.</string>
+diff --git a/app/version-tools.gradle b/app/version-tools.gradle
+index 12cabc24..7a54835c 100644
+--- a/app/version-tools.gradle
++++ b/app/version-tools.gradle
+@@ -39,13 +39,16 @@ ext.exec = { command ->
+ 	return execThing(command)
+ }
+ 
++// tt9-s22: fixed fork version (upstream v64.0 = versionCode 1645)
++static def s22VersionName() { return "64.0-s22.1" }
++static def s22VersionCode() { return 1646 }
++
+ ext.getVersionName = { ->
+-	return generateVersionName()
++	return s22VersionName()
+ }
+ 
+ ext.getVersionCode = { ->
+-	String commitsCount = execThing("git rev-list --count HEAD")
+-	return Integer.valueOf(commitsCount)
++	return s22VersionCode()
+ }
+ 
+ ext.getDebugVersion = { ->
+@@ -53,7 +56,7 @@ ext.getDebugVersion = { ->
+ }
+ 
+ ext.getReleaseVersion = { ->
+-	return "${generateVersionName()} (build: ${getVersionCode()}, git: ${getCurrentGitHash()})"
++	return "${s22VersionName()} (build: ${s22VersionCode()}, git: ${getCurrentGitHash()})"
+ }
+ 
+ ext.updateManifestVersion = { versionCode, versionName ->
+-- 
+2.34.1
+

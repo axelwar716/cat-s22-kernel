@@ -1,0 +1,15 @@
+TT9 S22
+Copyright (C) 2026 cat-s22
+
+Based on Traditional T9 (TT9) v64.0
+Copyright Dimo Karaivanov and the TT9 contributors
+https://github.com/sspanak/tt9
+
+Licensed under the Apache License, Version 2.0 (see LICENSE in this folder).
+
+Modified by cat-s22 for the CAT S22 Flip: every change is in patches/ and
+every changed line is marked with a "tt9-s22:" comment. The package name is
+io.github.sspanak.tt9.s22 so it can be installed next to the official TT9.
+
+The English dictionary is TT9's, based on SCOWL (Copyright 2000-2018 Kevin
+Atkinson); see docs/dictionaries/enWordlistReadme.txt in the TT9 source.

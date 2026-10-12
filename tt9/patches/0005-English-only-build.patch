@@ -1,0 +1,34 @@
+From d1bbd6e9fde12f6785a49844e1476b3bc3f7f7f9 Mon Sep 17 00:00:00 2001
+From: cat-s22 <>
+Date: Mon, 12 Oct 2026 13:30:11 +0000
+Subject: [PATCH 5/5] tt9-s22 public-en: English only (T9 + ABC), dictionaries of
+ the other 54 languages removed; 64.0-s22.5-pub-en (1652)
+
+
+Remove the 145 files listed in english-only-delete.txt first (the definitions and
+dictionaries of the other 54 languages), then apply this patch with git apply:
+
+  xargs rm -f < ../tt9/english-only-delete.txt && git apply ../tt9/patches/0005-English-only-build.patch
+
+---
+ app/version-tools.gradle | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/app/version-tools.gradle b/app/version-tools.gradle
+index b7b42dd6..43ec43d7 100644
+--- a/app/version-tools.gradle
++++ b/app/version-tools.gradle
+@@ -40,8 +40,8 @@ ext.exec = { command ->
+ }
+ 
+ // tt9-s22: fixed fork version (upstream v64.0 = versionCode 1645)
+-static def s22VersionName() { return "64.0-s22.4-pub" }
+-static def s22VersionCode() { return 1651 }
++static def s22VersionName() { return "64.0-s22.5-pub-en" }
++static def s22VersionCode() { return 1652 }
+ 
+ ext.getVersionName = { ->
+ 	return s22VersionName()
+-- 
+2.34.1
+

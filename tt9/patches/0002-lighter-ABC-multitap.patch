@@ -1,0 +1,395 @@
+From 56f1f2a184ec9c0b1c7c8da06ea05aa99ce828ed Mon Sep 17 00:00:00 2001
+From: cat-s22 <>
+Date: Sat, 3 Oct 2026 21:04:10 +0000
+Subject: [PATCH 2/5] tt9-s22: lighter ABC multitap on the CPU; version 64.0-s22.2 (1649)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Suggestion bar: when cycling letters only the colours of the previous and the
+  new letter are repainted (payload in notifyItemChanged), without the temporary
+  ViewHolder of the "change" animation (0 ms, invisible) and without rebuilding the text.
+- Click listeners created once per ViewHolder, not on every bind.
+- Recycled view pool raised to 32: with more than 5 letters on screen, every new
+  key (notifyDataSetChanged) inflated again the views that did not fit in the pool.
+- No RelativeSizeSpan when the scale is 100 % (suggestions and status bar): same
+  look, without forcing the slow measurement of spanned text.
+- Status bar: not rewritten if the shown text does not change.
+- Status icon: not resent to system_server/SystemUI if it does not change
+  (cache reset on every input field start).
+- ABC: accepting the previous letter no longer empties the list right before
+  showing the letters of the new key (one empty render and two status bar changes less).
+- Text before and after the cursor requested at the same time (two parallel
+  requests) instead of one after the other: one editor round trip less per new letter.
+---
+ app/src/main/AndroidManifest.xml              |  4 +-
+ .../sspanak/tt9/ime/SuggestionHandler.java    |  4 +-
+ .../io/github/sspanak/tt9/ime/UiHandler.java  | 12 ++++
+ .../tt9/ime/helpers/InputConnectionAsync.java | 50 +++++++++++++-
+ .../sspanak/tt9/ime/helpers/TextField.java    |  6 +-
+ .../github/sspanak/tt9/ui/tray/StatusBar.java | 23 ++++++-
+ .../tt9/ui/tray/SuggestionsAdapter.java       | 67 ++++++++++++++++---
+ .../sspanak/tt9/ui/tray/SuggestionsBar.java   | 11 +++
+ app/version-tools.gradle                      |  4 +-
+ 9 files changed, 160 insertions(+), 21 deletions(-)
+
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index e28752f3..f4740675 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:tools="http://schemas.android.com/tools"
+-	android:versionCode="1646"
+-	android:versionName="64.0-s22.1"
++	android:versionCode="1649"
++	android:versionName="64.0-s22.2"
+ 	xmlns:android="http://schemas.android.com/apk/res/android">
+ 
+ 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/> <!-- allows displaying notifications on Android >= 13 -->
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
+index ed0118aa..0194d91d 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/SuggestionHandler.java
+@@ -63,7 +63,9 @@ abstract public class SuggestionHandler extends TypingHandler {
+ 			lastWord = "";
+ 		}
+ 
+-		suggestionOps.commitCurrent(false, true);
++		// tt9-s22: in ABC mode, handleSuggestions() replaces the list with the letters of the new key
++		// right after this, so clearing it here only rendered an empty list (and the status bar) for nothing.
++		suggestionOps.commitCurrent(false, !InputModeKind.isABC(mInputMode));
+ 		mInputMode.onAcceptSuggestion(lastWord, true);
+ 
+ 		// tt9-s22: in ABC mode, the text around the cursor was already read for this key press, and
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/UiHandler.java b/app/src/main/java/io/github/sspanak/tt9/ime/UiHandler.java
+index effd1602..2ed6dea9 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/UiHandler.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/UiHandler.java
+@@ -30,6 +30,7 @@ abstract class UiHandler extends AbstractHandler {
+ 	protected boolean isMainViewShown = false;
+ 	protected MainView mainView = null;
+ 	protected StatusBar statusBar = null;
++	private int shownStatusIconResId = -1; // tt9-s22: -1 = unknown, 0 = hidden
+ 
+ 
+ 	protected void cleanUp() {
+@@ -77,6 +78,8 @@ abstract class UiHandler extends AbstractHandler {
+ 
+ 	@Override
+ 	protected boolean onStart(EditorInfo inputField, boolean restarting) {
++		shownStatusIconResId = -1;
++
+ 		if (getFinalContext().getInputType().isOwnSwitchPreviewField()) {
+ 			settings.setFolded(SettingsStore.isFoldedPreview);
+ 		} else if (foldDetector != null) {
+@@ -148,6 +151,15 @@ abstract class UiHandler extends AbstractHandler {
+ 		}
+ 
+ 		final int resId = new StatusIcon(settings.isStatusIconEnabled() ? mode : null, language, displayTextCase).resourceId;
++
++		// tt9-s22: this runs after (almost) every typed letter. Each call is an IPC to system_server,
++		// which forwards it to SystemUI, so skip it when the icon has not changed. The cache is reset
++		// on every input field start, in case the system has hidden the icon in the meantime.
++		if (resId == shownStatusIconResId) {
++			return;
++		}
++		shownStatusIconResId = resId;
++
+ 		if (resId == 0) {
+ 			hideStatusIcon();
+ 		} else {
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
+index f8cff775..7fa25635 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/InputConnectionAsync.java
+@@ -39,6 +39,35 @@ public class InputConnectionAsync {
+ 		return connection != null ? run(isUs, () -> connection.getTextAfterCursor(length, flags), TaskType.GET_TEXT_AFTER_CURSOR) : null;
+ 	}
+ 
++	/**
++	 * tt9-s22: reads the text before and after the cursor with two concurrent requests, instead of
++	 * one after the other. Each one blocks the main thread until the app answers, so on slow devices
++	 * this saves a full round trip to the app on every new letter. The results, timeouts and
++	 * failures are the same as calling getTextBeforeCursor() and getTextAfterCursor() in a row.
++	 *
++	 * @return [0] = text before the cursor, [1] = text after the cursor; null elements on failure.
++	 */
++	public static CharSequence[] getTextAroundCursor(boolean isUs, InputConnection connection, int beforeLength, int afterLength, int flags) {
++		if (connection == null) {
++			return new CharSequence[] { null, null };
++		}
++
++		if (isUs) {
++			return new CharSequence[] {
++				runSync(() -> connection.getTextBeforeCursor(beforeLength, flags)),
++				runSync(() -> connection.getTextAfterCursor(afterLength, flags))
++			};
++		}
++
++		final Future<CharSequence> before = submit(() -> connection.getTextBeforeCursor(beforeLength, flags), TaskType.GET_TEXT_BEFORE_CURSOR);
++		final Future<CharSequence> after = submit(() -> connection.getTextAfterCursor(afterLength, flags), TaskType.GET_TEXT_AFTER_CURSOR);
++
++		return new CharSequence[] {
++			await(before, TaskType.GET_TEXT_BEFORE_CURSOR),
++			await(after, TaskType.GET_TEXT_AFTER_CURSOR)
++		};
++	}
++
+ 	public static ExtractedText getExtractedText(boolean isUs, InputConnection connection, ExtractedTextRequest request, int flags) {
+ 		return connection != null ? run(isUs, () -> connection.getExtractedText(request, flags), TaskType.GET_EXTRACTED_TEXT) : null;
+ 	}
+@@ -73,7 +102,26 @@ public class InputConnectionAsync {
+ 
+ 
+ 	private static <T> T runAsync(Callable<T> task, TaskType type) {
+-		Future<T> future = getExecutor().submit(task);
++		return await(submit(task, type), type);
++	}
++
++
++	@Nullable
++	private static <T> Future<T> submit(Callable<T> task, TaskType type) {
++		try {
++			return getExecutor().submit(task);
++		} catch (Exception e) {
++			Logger.w(LOG_TAG, type.name() + " failed. " + e);
++			return null;
++		}
++	}
++
++
++	private static <T> T await(@Nullable Future<T> future, TaskType type) {
++		if (future == null) {
++			return null;
++		}
++
+ 		try {
+ 			return future.get(SettingsStore.INPUT_CONNECTION_MAX_WAIT, TimeUnit.MILLISECONDS);
+ 		} catch (TimeoutException e) {
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/TextField.java b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/TextField.java
+index 618dbf65..45f8db71 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ime/helpers/TextField.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ime/helpers/TextField.java
+@@ -77,9 +77,11 @@ public class TextField extends InputField {
+ 	 */
+ 	@NonNull public String[] getSurroundingStringForAutoAssistance(@NonNull SettingsStore settings, @Nullable InputMode mode) {
+ 		if (settings.isAutoAssistanceOn(mode)) {
++			// tt9-s22: both parts are requested at the same time (see InputConnectionAsync)
++			final CharSequence[] chars = InputConnectionAsync.getTextAroundCursor(isUs, getConnection(), SettingsStore.AUTO_ASSISTANCE_BEFORE_TEXT, SettingsStore.AUTO_ASSISTANCE_AFTER_TEXT, 0);
+ 			return new String[] {
+-				getStringBeforeCursor(SettingsStore.AUTO_ASSISTANCE_BEFORE_TEXT),
+-				getStringAfterCursor(SettingsStore.AUTO_ASSISTANCE_AFTER_TEXT)
++				chars[0] != null ? chars[0].toString() : "",
++				chars[1] != null ? chars[1].toString() : ""
+ 			};
+ 		} else {
+ 			return new String[] { "", "" };
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ui/tray/StatusBar.java b/app/src/main/java/io/github/sspanak/tt9/ui/tray/StatusBar.java
+index 481773e4..aee82612 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ui/tray/StatusBar.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ui/tray/StatusBar.java
+@@ -2,6 +2,7 @@ package io.github.sspanak.tt9.ui.tray;
+ 
+ import android.content.Context;
+ import android.text.SpannableString;
++import android.text.TextUtils;
+ import android.text.style.RelativeSizeSpan;
+ import android.view.MotionEvent;
+ import android.view.View;
+@@ -26,6 +27,7 @@ public class StatusBar {
+ 	@Nullable private final TextView statusView;
+ 	@NonNull private final SettingsStore settings;
+ 	@Nullable private String statusText;
++	private float renderedScale = -1; // tt9-s22: font scale of the text currently displayed
+ 
+ 	@NonNull private final DictionaryLoadingBar loadingBar;
+ 	@NonNull private final Runnable onLoadingFinished;
+@@ -194,13 +196,30 @@ public class StatusBar {
+ 			return;
+ 		}
+ 
++		// tt9-s22: this is called on every key press (the bar is hidden and shown with the suggestions,
++		// and the text case refreshes it), mostly with what is already on the screen. Setting the same
++		// text again rebuilds its layout and requests a new measure of the whole keyboard, so skip that.
+ 		if (!isShown) {
+-			statusView.setText(null);
++			if (statusView.length() > 0) {
++				statusView.setText(null);
++			}
++			return;
++		}
++
++		final float scale = settings.getSuggestionFontScale();
++		if (scale == renderedScale && TextUtils.equals(statusText, statusView.getText())) {
++			return;
++		}
++		renderedScale = scale;
++
++		// At 100 %, the RelativeSizeSpan changes nothing, but forces the slower text measuring path.
++		if (scale == 1f) {
++			statusView.setText(statusText);
+ 			return;
+ 		}
+ 
+ 		SpannableString scaledText = new SpannableString(statusText);
+-		scaledText.setSpan(new RelativeSizeSpan(settings.getSuggestionFontScale()), 0, statusText.length(), 0);
++		scaledText.setSpan(new RelativeSizeSpan(scale), 0, statusText.length(), 0);
+ 
+ 		statusView.setText(scaledText);
+ 	}
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsAdapter.java b/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsAdapter.java
+index 65c0c49a..cd60dc7d 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsAdapter.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsAdapter.java
+@@ -17,6 +17,13 @@ import java.util.List;
+ import java.util.function.Consumer;
+ 
+ public class SuggestionsAdapter extends RecyclerView.Adapter<SuggestionsAdapter.ViewHolder> {
++	/**
++	 * tt9-s22: payload for notifyItemChanged() when only the selection moved. With a payload, the
++	 * ItemAnimator reuses the same ViewHolder (no temporary "change" holder is created and bound) and
++	 * we only repaint the colors, instead of rebuilding the text, which would re-measure the item.
++	 */
++	private static final Object PAYLOAD_SELECTION = new Object();
++
+ 	private final Consumer<Integer> onItemClick;
+ 	private final Consumer<Integer> onItemLongClick;
+ 	private final int layout;
+@@ -44,24 +51,62 @@ public class SuggestionsAdapter extends RecyclerView.Adapter<SuggestionsAdapter.
+ 	@NonNull
+ 	@Override
+ 	public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+-		return new ViewHolder(mInflater.inflate(layout, parent, false));
++		final ViewHolder holder = new ViewHolder(mInflater.inflate(layout, parent, false));
++
++		// tt9-s22: the listeners read the position from the tag, so they can be set only once per
++		// holder, instead of allocating two new lambdas on every bind.
++		holder.suggestionItem.setOnClickListener(v -> onItemClick.accept((int) v.getTag()));
++		holder.suggestionItem.setOnLongClickListener(v -> {
++			onItemLongClick.accept((int) v.getTag());
++			return true;
++		});
++
++		return holder;
++	}
++
++
++	@Override
++	public void onBindViewHolder(@NonNull ViewHolder holder, int position, @NonNull List<Object> payloads) {
++		if (!payloads.isEmpty() && isSelectionOnly(payloads)) {
++			renderSelection(holder, position);
++		} else {
++			onBindViewHolder(holder, position);
++		}
+ 	}
+ 
+ 
+ 	@Override
+ 	public void onBindViewHolder(ViewHolder holder, int position) {
+-		SpannableString scaledText = new SpannableString(mSuggestions.get(position));
+-		scaledText.setSpan(new RelativeSizeSpan(textSize), 0, scaledText.length(), 0);
+-		holder.suggestionItem.setText(scaledText);
++		final String suggestion = mSuggestions.get(position);
++
++		// tt9-s22: at 100 % font size the RelativeSizeSpan changes nothing, but a span that affects
++		// the metrics forces the slower StaticLayout path when measuring the text. Plain text renders the same.
++		if (textSize == 1f) {
++			holder.suggestionItem.setText(suggestion);
++		} else {
++			SpannableString scaledText = new SpannableString(suggestion);
++			scaledText.setSpan(new RelativeSizeSpan(textSize), 0, scaledText.length(), 0);
++			holder.suggestionItem.setText(scaledText);
++		}
+ 
+ 		holder.suggestionItem.setTag(position);
++		renderSelection(holder, position);
++	}
++
++
++	private void renderSelection(@NonNull ViewHolder holder, int position) {
+ 		holder.suggestionItem.setTextColor(selectedIndex == position ? colorHighlight : colorDefault);
+ 		holder.suggestionItem.setBackgroundColor(selectedIndex == position ? backgroundHighlight : Color.TRANSPARENT);
+-		holder.suggestionItem.setOnClickListener(v -> onItemClick.accept((int) v.getTag()));
+-		holder.suggestionItem.setOnLongClickListener(v -> {
+-			onItemLongClick.accept((int) v.getTag());
+-			return true;
+-		});
++	}
++
++
++	private static boolean isSelectionOnly(@NonNull List<Object> payloads) {
++		for (Object payload : payloads) {
++			if (payload != PAYLOAD_SELECTION) {
++				return false;
++			}
++		}
++		return true;
+ 	}
+ 
+ 
+@@ -72,8 +117,8 @@ public class SuggestionsAdapter extends RecyclerView.Adapter<SuggestionsAdapter.
+ 
+ 
+ 	public void setSelection(int newIndex) {
+-		notifyItemChanged(selectedIndex);
+-		notifyItemChanged(selectedIndex = newIndex);
++		notifyItemChanged(selectedIndex, PAYLOAD_SELECTION);
++		notifyItemChanged(selectedIndex = newIndex, PAYLOAD_SELECTION);
+ 	}
+ 
+ 
+diff --git a/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsBar.java b/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsBar.java
+index c74b68e6..eba71038 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsBar.java
++++ b/app/src/main/java/io/github/sspanak/tt9/ui/tray/SuggestionsBar.java
+@@ -34,6 +34,8 @@ public class SuggestionsBar {
+ 	public static final String SHOW_GROUP_0_SUGGESTION = "(…\u200A)";
+ 	public static final String SHOW_GROUP_1_SUGGESTION = "(…\u200B)";
+ 
++	private static final int RECYCLED_VIEW_POOL_SIZE = 32; // tt9-s22: more than fit on the screen
++
+ 	private final String SHOW_MORE_SUGGESTION = "(...)";
+ 	private final String STEM_SUFFIX = "… +";
+ 	private final String STEM_VARIATION_PREFIX = "…";
+@@ -91,6 +93,10 @@ public class SuggestionsBar {
+ 		animator.setChangeDuration(SettingsStore.SUGGESTIONS_TRANSLATE_ANIMATION_DURATION);
+ 		animator.setAddDuration(SettingsStore.SUGGESTIONS_TRANSLATE_ANIMATION_DURATION);
+ 		animator.setRemoveDuration(SettingsStore.SUGGESTIONS_TRANSLATE_ANIMATION_DURATION);
++
++		// tt9-s22: the "change" animation lasts 0 ms, so it is invisible, but it still makes RecyclerView
++		// create and bind a second ViewHolder for every changed item and run an extra animation frame.
++		animator.setSupportsChangeAnimations(false);
+ 	}
+ 
+ 
+@@ -120,6 +126,11 @@ public class SuggestionsBar {
+ 		mView.setAdapter(mSuggestionsAdapter);
+ 		mView.setHasFixedSize(true); // Optimizes performance
+ 
++		// tt9-s22: every new list (each new key in ABC mode) is rendered with notifyDataSetChanged(),
++		// which sends all visible items to the recycled pool. The default pool keeps only 5 per type,
++		// so with more letters on screen, the extra items were discarded and inflated again each time.
++		mView.getRecycledViewPool().setMaxRecycledViews(0, RECYCLED_VIEW_POOL_SIZE);
++
+ 		setColorScheme();
+ 	}
+ 
+diff --git a/app/version-tools.gradle b/app/version-tools.gradle
+index 7a54835c..b1a13dda 100644
+--- a/app/version-tools.gradle
++++ b/app/version-tools.gradle
+@@ -40,8 +40,8 @@ ext.exec = { command ->
+ }
+ 
+ // tt9-s22: fixed fork version (upstream v64.0 = versionCode 1645)
+-static def s22VersionName() { return "64.0-s22.1" }
+-static def s22VersionCode() { return 1646 }
++static def s22VersionName() { return "64.0-s22.2" }
++static def s22VersionCode() { return 1649 }
+ 
+ ext.getVersionName = { ->
+ 	return s22VersionName()
+-- 
+2.34.1
+

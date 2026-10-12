@@ -130,7 +130,7 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 
 ## Source
 
-- **Kernel source (GPLv2):** branch [`stock-stable-4`](../../tree/stock-stable-4) (tag `stock-stable-4`). Every change from the Qualcomm base is a separate commit with a full description.
+- **Kernel source (GPLv2):** branch [`stock-stable-4`](../../tree/stock-stable-4). Every change from the Qualcomm base is a separate commit with a full description. The tag `stock-stable-4` is the exact source of the release image; the branch only adds copyright notices on top (comments).
 - Defconfig: `arch/arm/configs/s22flip_defconfig`.
 - Build: AOSP Clang 10.0.6 `r377782d` with the GCC 4.9 `arm-linux-androideabi` binutils:
   ```
@@ -141,8 +141,18 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
   ```
   `LOCALVERSION=` must be empty so `vermagic` stays `4.9.227-perf` and the stock vendor modules load. The `zImage` is then repacked into the stock v30 boot image (stock DTB, header and cmdline).
 - **Magisk 27.0 (GPLv3):** [topjohnwu/Magisk v27.0](https://github.com/topjohnwu/Magisk/tree/v27.0).
-- **TT9 (Apache-2.0):** [sspanak/tt9](https://github.com/sspanak/tt9).
+- **TT9 S22 (Apache-2.0):** patches on top of [sspanak/tt9](https://github.com/sspanak/tt9) v64.0 in [`tt9/`](tt9), with the steps to rebuild the published APK.
 - The outer-screen font is generated from Roboto Regular (Apache-2.0).
+
+## License
+
+Copyright (C) 2026 cat-s22.
+
+- Kernel, this README and `ramdisk/overlay.d`: **GPL-2.0** ([`LICENSE`](LICENSE)). The kernel keeps the copyright of Linux, Qualcomm and the driver authors; the S22 Flip work is marked `Copyright (C) 2026 cat-s22` in the files it wrote or changed.
+- TT9 S22: **Apache-2.0** ([`tt9/LICENSE`](tt9/LICENSE), [`tt9/NOTICE`](tt9/NOTICE)), based on TT9 by Dimo Karaivanov and contributors.
+- Magisk 27.0: GPL-3.0, by John Wu.
+
+Details in [`NOTICE`](NOTICE).
 
 ## Disclaimer
 
