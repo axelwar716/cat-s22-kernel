@@ -1,17 +1,17 @@
 # CAT S22 Flip — kernel `stock-stable-4`
 
-**Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm dev with custom android, not basic GSI. Anything in stock sucks**
+**Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm dev with custom android, not basic GSI support. Anything in stock sucks**
 
 A **stability-focused** kernel for the CAT S22 Flip (firmware v30, `4.9.227-perf`), shipped as a single boot image with Magisk 27.0 and the TT9 S22 keyboard.
 
 ## Scope: stable first
 
-The only goal of this build is to be **stable**: fix the keypad and the other basic things(was complex asf) that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, the stock config and a Clang 10 compiler like stock (small differences listed [below](#kernel-base)), the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
+The only goal of this build is to be **stable**: fix the keypad and the other basic things (was complex asf) that are broken or missing on stock, and nothing more. It stays as close to stock as possible: same kernel version, the stock config and a Clang 10 compiler like stock (small differences listed [below](#kernel-base)), the stock DTB, header and command line, and CAT's own signed vendor modules loading untouched.
 
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
-> **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work.
-> **Tested on a GSI:** Android 16 from TrebleDroid works with this same kernel, even camera and the 2nd screen clock (see [On a GSI](#on-a-gsi)). On the stock v30 vendor it needs one prop fix or it hangs.
+> **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work. Reports and easy debug steps: [#2](../../issues/2).
+> **Tested on a GSI:** Android 16 from TrebleDroid works with this same kernel, even camera and the 2nd screen clock (see [On a GSI](#on-a-gsi)). On the stock v30 vendor it needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
 > **Not tested on CAT's stock Android 11 system.** My daily setup is my own LineageOS 20 build with the stock v30 vendor.
 
 ## Downloads
@@ -89,7 +89,7 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 ### Outer screen (128×128 SPI ST7789V2, `fb2`, `s22_kclock`)
 
 - **Lid closed:** the kernel owns the outer screen and draws a 24 h clock, the date ("Mon 12 Oct") and the battery ("85%", "85% +" when charging/full), styled like S22Cover (same Roboto metrics, light-grey text). Redrawn every minute by a wake alarm, also in deep sleep. **No app needed.**
-- Kernel time zone with EU/US DST until Android sets the zone.
+- Kernel time zone with EU/US DST until Android sets the zone. **Android 15+ never sets it**, so there the clock shows UTC (+ the DST hour), not local time: see [#1](../../issues/1).
 - Backlight on for 8 s on lid close, volume or orange key.
 - **Lid open:** the outer screen is held off (no power vote, backlight 0) → no mirroring. Android frames are accepted but never sent over SPI.
 - S22Cover-style apps take it over cleanly by writing `s22_kclock/config` (their last frame + backlight). `s22_kclock.autonomous=0` disables the kernel clock.
@@ -120,6 +120,7 @@ A fork of [TT9](https://github.com/sspanak/tt9) v64.0 (English only, 3.8 MB, pac
 - In-memory ABC multitap; the 800 ms multitap timer runs from your last real press.
 - IME threads keep foreground priority while the keyboard is hidden.
 - **Needs this kernel:** on the stock kernel the bouncing comes back.
+- **Using another keyboard app?** The kernel already debounces the keypad. Set the app's own key debounce ("accidental key repeat protection") to **0 ms / off**. If the app doesn't let you, its debounce stacks on top of the kernel's: fast presses of the same key get dropped, which undoes part of the kernel fixes and makes typing worse than with TT9 S22. (Regular TT9: *Accidental Key Repeat Protection* → *Off*.)
 
 How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing. Log: `logcat -s tt9-s22`. The copies here only add a license header comment; otherwise they are identical to the ones in the image.
 
@@ -133,18 +134,19 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 
 - Running on my phone since 11 Oct 2026: my own LineageOS 20 build (not public) on the stock v30 vendor, flashed without wipe. Lid close/open and the outer-screen clock checked on the device; the keypad driver is the one I've typed on every day since 3 Oct. TT9 installs on the first boot and does nothing on the second.
 - 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
-- **Not tested:** IMS / VoLTE / VoWiFi and CAT's stock Android 11 system.
+- **Not tested:** IMS / VoLTE / VoWiFi ([#2](../../issues/2)) and CAT's stock Android 11 system.
 
 ### On a GSI
 
-Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor). All works, even camera and 2nd screen.
+Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). All works, even camera and 2nd screen.
 
-- Checked on the device: Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service, lid open/close, TT9 S22 installed by the image and set as keyboard.
-- **2nd screen:** the kernel draws the clock by itself with the lid closed. Android doesn't drive the outer screen on a GSI (it only sees the inner 480×640 panel), so no notifications or caller ID there.
+- Checked on the device: Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard.
+- **2nd screen:** the kernel draws the clock by itself with the lid closed. Android doesn't drive the outer screen on a GSI (it only sees the inner 480×640 panel), so no notifications or caller ID there. **On Android 15+ the clock shows the wrong local time** (UTC + DST hour; 1 h behind in Spain): [#1](../../issues/1).
 - **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root: `resetprop ro.lmk.use_psi true` then `setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). It's lost on reboot.
-- Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`).
+- Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`). Magisk's early init still runs `overlay.d` (that's how TT9 S22 got installed); it's the Magisk daemon that doesn't start.
 - To make the phone sleep when the lid closes, run once: `adb shell settings put global lid_behavior 1` (AOSP default is "do nothing").
 - Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`. The **orange and speaker keys are unmapped**, and the **red key locks** the phone instead of hanging up.
+- **Not measured on the GSI:** battery drain (it doesn't suspend with USB plugged in) and calls (no SIM). IMS / VoLTE: [#2](../../issues/2).
 
 ## Source
 
