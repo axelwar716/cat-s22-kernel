@@ -1,6 +1,6 @@
 # CAT S22 Flip — custom kernel `stock-stable-4`
 
-> **Are u dumb like me? Read the [i missed school](README-SIMPLE.md) first.**
+> **Are u dumb like me? Read the [i missed school](README-SIMPLE.md) version.**
 
 **Coded and vibe coded bruh. Won't support anything that isn't a main issue. Cuz i'm dev with custom android, not basic GSI support. Anything in stock sucks**
 
