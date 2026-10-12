@@ -11,7 +11,8 @@ The only goal of this build is to be **stable**: fix the keypad and the other ba
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
 > **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work.
-> **Not tested on a GSI** (see [On a GSI](#on-a-gsi)) **or on CAT's stock Android 11 system.** I've only run it on my own LineageOS 20 build with the stock v30 vendor.
+> **Tested on a GSI:** Android 16 from TrebleDroid works with this same kernel, even camera and the 2nd screen clock (see [On a GSI](#on-a-gsi)). On the stock v30 vendor it needs one prop fix or it hangs.
+> **Not tested on CAT's stock Android 11 system.** My daily setup is my own LineageOS 20 build with the stock v30 vendor.
 
 ## Downloads
 
@@ -131,10 +132,17 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 ## Status
 
 - Running on my phone since 11 Oct 2026: my own LineageOS 20 build (not public) on the stock v30 vendor, flashed without wipe. Lid close/open and the outer-screen clock checked on the device; the keypad driver is the one I've typed on every day since 3 Oct. TT9 installs on the first boot and does nothing on the second.
-- **Not tested:** IMS / VoLTE / VoWiFi, any GSI, and CAT's stock Android 11 system.
+- 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
+- **Not tested:** IMS / VoLTE / VoWiFi and CAT's stock Android 11 system.
 
 ### On a GSI
 
+Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor). All works, even camera and 2nd screen.
+
+- Checked on the device: Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service, lid open/close, TT9 S22 installed by the image and set as keyboard.
+- **2nd screen:** the kernel draws the clock by itself with the lid closed. Android doesn't drive the outer screen on a GSI (it only sees the inner 480×640 panel), so no notifications or caller ID there.
+- **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root: `resetprop ro.lmk.use_psi true` then `setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). It's lost on reboot.
+- Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`).
 - To make the phone sleep when the lid closes, run once: `adb shell settings put global lid_behavior 1` (AOSP default is "do nothing").
 - Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`. The **orange and speaker keys are unmapped**, and the **red key locks** the phone instead of hanging up.
 
