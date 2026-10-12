@@ -23,6 +23,8 @@ One file. Flash it. Ur apps and photos stay.
 
 **Outer screen.** lid closed = time, date and battery, drawn by the kernel itself, no app needed. the stock driver waited for a "frame done" signal the panel never sends, sent the colors in the wrong format, and could corrupt its own queue and freeze the whole phone when u closed the lid. classic.
 
+**Flashlight + video (new).** flashlight died after a few secs and the camera refused to record video, on every rom. not CAT's fault this time, it came from the qualcomm code this kernel is built on. the flashlight was switched on in flash mode, and the LED chip kills flash mode by itself after a moment so it doesn't fry. the video encoder wanted camera frames a bit bigger than the ones the camera actually hands over, so it threw away the first one and the recording died on the spot. both fixed: flashlight stays on, videos save.
+
 **Stuff CAT never published (added):** touchscreen, speaker amp, USB‑C headphones, hearing-aid coil, keypad light, lid sensor. dug out of open kernels from other phones with the same chips, plus CAT's own binaries. treasure hunt, no map. and CAT's own signed audio and wifi modules still load untouched, cuz the kernel was rebuilt to match stock.
 
 **Battery.** lid closed, it basically sleeps. the outer clock wakes up just to redraw, then back to sleep. no villain here.
@@ -42,12 +44,12 @@ U need an **unlocked bootloader** and a PC with `adb` and `fastboot`. don't know
 
 or just read [this XDA thread](https://xdaforums.com/t/cat-s22-flip-installing-gsi-rom.4660690/), any page, doesn't matter. people there explain unlocking, backup and flashing step by step, way better than google.
 
-1. Download `boot-s22-stock-stable-4-tt9en.img` from [Releases](../../releases/tag/stock-stable-4).
+1. Download `boot-s22-stock-stable-5-tt9en.img` from [Releases](../../releases/tag/stock-stable-5).
 2. **Back up ur current `boot.img`.** that's ur undo button.
 3. Run:
    ```
    adb reboot bootloader
-   fastboot flash boot boot-s22-stock-stable-4-tt9en.img
+   fastboot flash boot boot-s22-stock-stable-5-tt9en.img
    fastboot reboot
    ```
 
@@ -61,8 +63,8 @@ fastboot flash boot <your saved boot.img>
 ## Tested?
 
 - **My phone, every day** (my own LineageOS 20, not public, on CAT's vendor): works.
-- **Android 16** (TrebleDroid GSI): booted it and checked wifi, bluetooth, sound, both cameras, sensors, battery reading, lid, GPS starting and the outer clock. read the crap below.
-- **CAT's stock Android 11:** no idea.
+- **Android 13** (LineageOS 20 GSI), **Android 15** (VoltageOS GSI) and **Android 16** (TrebleDroid GSI): all boot, videos record, flashlight stays on. on android 16 i also checked wifi, bluetooth, sound, both cameras, sensors, battery reading, lid, GPS starting and the outer clock. read the crap below. which GSIs exactly and how to put them on: [nerd README](README.md#tested-on).
+- **CAT's stock Android 11:** the previous version worked (outer screen, sound, camera, keys, lid, wifi). this one, not tried there yet.
 - **Calls over 4G (VoLTE / VoWiFi):** no idea. carriers are killing 2G/3G, so this one matters. test it and tell me in [issue #2](../../issues/2), no PC needed.
 
 ## Known crap
@@ -76,6 +78,8 @@ fastboot flash boot <your saved boot.img>
   ```
 - **Android 16:** Magisk doesn't start. TT9 S22 still installs.
 - **Android 16:** closing the lid won't put it to sleep until u run this once: `adb shell settings put global lid_behavior 1`
+- **LineageOS 20 GSI:** TT9 S22 installs but the setup keeps the old keyboard. pick TT9 S22 once in settings → languages & input.
+- **Older versions of this kernel:** flashlight dies after a few secs and video won't record. update.
 
 ## Support
 
@@ -83,7 +87,7 @@ Main issues only. hobby, not a product. really broken? open an [issue](../../iss
 
 ## Boring legal stuff
 
-- Free and open source. code in the [`stock-stable-4` branch](../../tree/stock-stable-4), how to build it in the [nerd README](README.md#source).
+- Free and open source. code in the [`stock-stable-5` branch](../../tree/stock-stable-5), how to build it in the [nerd README](README.md#source).
 - Kernel and READMEs: GPL-2.0. TT9 S22: Apache-2.0. Magisk: GPL-3.0. See [`NOTICE`](NOTICE).
 - **No warranty.** flashing can go wrong, keep that backup.
 - Not related to CAT, Caterpillar or Bullitt Group.

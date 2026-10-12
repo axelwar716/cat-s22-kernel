@@ -3,7 +3,7 @@ Copyright (C) 2026 cat-s22
 
 What is covered by what:
 
-- Kernel (branch stock-stable-4): GPL-2.0, see LICENSE. It is a derived work
+- Kernel (branch stock-stable-5): GPL-2.0, see LICENSE. It is a derived work
   of Linux and the Qualcomm msm-4.9 kernel, with drivers from The Linux
   Foundation, Google, AWINIC, Chipsemi and WillSemi; their copyright notices
   stay in each file. The CAT S22 Flip work is Copyright (C) 2026 cat-s22 and

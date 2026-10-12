@@ -1,4 +1,4 @@
-# CAT S22 Flip — custom kernel `stock-stable-4`
+# CAT S22 Flip — custom kernel `stock-stable-5`
 
 > **Are u dumb like me? Read the [i missed school](README-SIMPLE.md) version.**
 
@@ -13,21 +13,21 @@ The only goal of this build is to be **stable**: fix the keypad and the other ba
 I run a more advanced kernel and vendor on my own phone. This one is not that: it is the conservative subset, published so everyone can have a better experience on the S22 while staying relatively safe.
 
 > **Not tested:** IMS / VoLTE / VoWiFi. I haven't tried them with this kernel, so I can't say whether they work. Reports and easy debug steps: [#2](../../issues/2).
-> **Tested on a GSI:** Android 16 from TrebleDroid boots with this same kernel; what I checked, camera and 2nd screen clock included, is in [On a GSI](#on-a-gsi). On the stock v30 vendor it needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
-> **Not tested on CAT's stock Android 11 system.** My daily setup is my own LineageOS 20 build with the stock v30 vendor.
+> **Tested on 3 GSIs:** Android 13 (LineageOS 20), Android 15 (VoltageOS 4.5) and Android 16 (TrebleDroid) boot with this kernel, and video recording + flashlight were checked on all three. What I checked on each one is in [Tested on](#tested-on). On the stock v30 vendor, Android 16 needs one prop fix or it hangs. On Android 15+ the outer-screen clock shows the wrong local time ([#1](../../issues/1)).
+> **CAT's stock Android 11:** `stock-stable-4` was checked by hand there; `stock-stable-5` not yet. My daily setup is my own LineageOS 20 build with the stock v30 vendor.
 
 ## Downloads
 
-From [Releases → `stock-stable-4`](../../releases/tag/stock-stable-4):
+From [Releases → `stock-stable-5`](../../releases/tag/stock-stable-5):
 
 | File | What it is |
 |---|---|
-| `boot-s22-stock-stable-4-tt9en.img` | Kernel + Magisk 27.0 + TT9 S22 (English) — **the image to flash** |
+| `boot-s22-stock-stable-5-tt9en.img` | Kernel + Magisk 27.0 + TT9 S22 (English) — **the image to flash** |
 | `TT9S22-en.apk` | The same TT9 S22 keyboard on its own, to reinstall it after uninstalling |
 | `SHA256SUMS` | Checksums |
 
 ```
-bfb84f2d71a4f804bd03968451f70b33deb6090c54180d083ee65cb2efc26801  boot-s22-stock-stable-4-tt9en.img
+125421ea9dd91b97e77aa0f2b7067dd405c434e27fc4d2893549c75f02eff196  boot-s22-stock-stable-5-tt9en.img
 95481d05f6d9ce87a01629fce0ef15ce8724eaf7e4c3e7ab8743f38d94f546ab  TT9S22-en.apk
 ```
 
@@ -43,7 +43,7 @@ Never unlocked the bootloader or backed up `boot` before? Read the XDA thread [C
 2. Flash:
    ```
    adb reboot bootloader
-   fastboot flash boot boot-s22-stock-stable-4-tt9en.img
+   fastboot flash boot boot-s22-stock-stable-5-tt9en.img
    fastboot reboot
    ```
 3. If it doesn't boot, or recovery says "data may be corrupt", **don't factory reset**. Flash your backup back: `fastboot flash boot <your saved boot.img>`.
@@ -82,6 +82,15 @@ CAT never released the kernel source for the S22 Flip, so it was rebuilt to matc
 - Tunable in `/sys/module/matrix_keypad/parameters/`: `press_ms`, `release_ms`, `row_pull` (0 none · 1 stock pull-down · 2 keeper), `fall_us`, plus the counters `rejected_taps`, `rearm_rescans`, `follow_fail`, `irq_no_key`.
 - **Tested on the phone:** 248 fast presses on 4/7 → 0 doubled or extra letters, 0 row IRQs while idle.
 - **Desk test:** ~490 real presses captured on the phone, each replayed in 62 phase/latency/jitter variants → 0 lost, 0 ghosts.
+
+### Flashlight and video recording (new in `stock-stable-5`, [#3](../../issues/3))
+
+Both were broken with every earlier build of this kernel, on every ROM (my own LineageOS 20 too). CAT's stock kernel was fine: the bugs come from the Qualcomm base code this kernel is built on.
+
+- **Flashlight went off after ~3 s.** The flash LED chip has two control pins: GPIO 33 (`FL_EN`) and GPIO 34 (`FL_NOW`). Measured on the phone (battery voltage with charging off): 33 alone = torch, steady; 34 alone = nothing; 33 + 34 = flash mode, which the LED chip cuts by itself after ~1.5 s to protect the LED. The Qualcomm `qm215_gpio_flash` driver drove **both** pins for the flashlight. Now flashlight = 33 only, camera flash = 33 + 34.
+- **Video recording stopped at once, no file saved.** The video encoder driver (`msm_vidc`) asked for camera frames 16 KiB bigger than the ones the stock v30 vendor allocates (1080p: 3,153,920 vs 3,137,536 bytes), because `VENUS_BUFFER_SIZE` added an extradata margin inside the frame. So the kernel rejected the first camera frame (`Failed to qbuf, -22`) and the camera app gave up. The encoder firmware itself only needs 3,133,568 bytes, so the margin is gone. Screen recording always worked: only camera → encoder was hit.
+- **Checked with the release image** on Android 13, 15 and 16 ([Tested on](#tested-on)): 1080p and 720p video at ~30 fps with sound, no encoder errors, the whole file decodes cleanly. The flashlight stays on for the whole 14 s test (steady LED draw on Android 15 and 16; on Android 13 checked from Android's side only, no root there).
+- **Checked with the test build** (same code, Android 15): video playback with the hardware decoder still works, and the photo flash fires (1/10,040 s at ISO 114 with flash, 1/10 s at ISO 2,976 without).
 
 ### Lid (Hall sensor)
 
@@ -126,7 +135,7 @@ A fork of [TT9](https://github.com/sspanak/tt9) v64.0 (English only, 3.8 MB, pac
 - **Needs this kernel:** on the stock kernel the bouncing comes back.
 - **Using another keyboard app?** The kernel already debounces the keypad. Set the app's own key debounce ("accidental key repeat protection") to **0 ms / off**. If the app doesn't let you, its debounce stacks on top of the kernel's: fast presses of the same key get dropped, which undoes part of the kernel fixes and makes typing worse than with TT9 S22. (Regular TT9: *Accidental Key Repeat Protection* → *Off*.)
 
-How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing, and a later image with a newer TT9 S22 updates it only if you still have it (it never comes back after an uninstall, and is never set as the keyboard again). Log: `logcat -s tt9-s22`. The copies here only add a license header comment; otherwise they are identical to the ones in the image, except for the "never comes back after an uninstall, even with a newer TT9 S22" check, added for the next release (in `stock-stable-4` there's no newer version, so it behaves the same).
+How it gets installed (see [`ramdisk/overlay.d`](ramdisk/overlay.d), nothing is written to `system` or `vendor`): Magisk's `overlay.d` runs a one-shot script after boot. If TT9 S22 is missing or older, it installs it and, on a fresh install, sets it as the keyboard. It then writes a marker in `/data/adb`, so **if you uninstall it, it stays gone**, and deletes the bundled APK from Magisk's tmpfs so it doesn't stay in RAM. On later boots it does nothing, and a later image with a newer TT9 S22 updates it only if you still have it (it never comes back after an uninstall, and is never set as the keyboard again). Log: `logcat -s tt9-s22`. The copies here are the ones in the `stock-stable-5` image. `stock-stable-4` had the same scripts without the license header and without the "never comes back after an uninstall, even with a newer TT9 S22" check (it bundled the same TT9 S22 version, so it behaved the same). If a ROM's setup wizard sets its own keyboard after TT9 S22 is installed, pick TT9 S22 once in Settings → Languages & input (seen on the LineageOS 20 GSI after a wipe).
 
 ### Root
 
@@ -134,26 +143,64 @@ Magisk 27.0 is in the image: root from the first boot. Open the Magisk stub once
 
 ---
 
-## Status
-
-- 12 Oct 2026: same kernel tried on Android 16 from TrebleDroid (see [On a GSI](#on-a-gsi)).
-- **Not tested:** IMS / VoLTE / VoWiFi ([#2](../../issues/2)) and CAT's stock Android 11 system.
+## Tested on
 
 ### On a GSI (i don't think higher android versions would bring any useful value, but spend more battery, not tested fully)
 
-Just tried the same kernel I posted on Android 16 from TrebleDroid: [`ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), `system-td-arm32_binder64-vanilla.img.xz` (booted as a DSU, stock v30 vendor; only the `arm32_binder64` vanilla variant tried, not installed to `system`). What I checked, camera and 2nd screen included:
+All on the stock v30 vendor, Android installed to `system` (`/data` wiped when switching), boot image flashed as is:
 
-- Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard.
+| ROM | Android | Kernel | Result |
+|---|---|---|---|
+| [LineageOS 20 GSI](https://sourceforge.net/projects/andyyan-gsi/files/lineage-20-td/) `a64_bvN` (AndyYan, 21 Oct 2025, `userdebug`) | 13 | `stock-stable-4` + `stock-stable-5` | Boots in ~2 min, SELinux enforcing. No `lmkd` fix needed. Magisk works. 1080p video and flashlight OK with `stock-stable-5` |
+| [VoltageOS 4.5](https://github.com/cawilliamson/treble_voltage/releases/tag/4.5-20250717.114637) vanilla `arm32_binder64` (17 Jul 2025) | 15 | `stock-stable-4` + `stock-stable-5` | Boots in ~5 min, SELinux enforcing. No `lmkd` fix needed. Magisk works. Video, flashlight and photo flash OK with `stock-stable-5` (broken with `stock-stable-4`, that's how [#3](../../issues/3) was found) |
+| [TrebleDroid `ci-20250617`](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617) `system-td-arm32_binder64-vanilla` | 16 | `stock-stable-4` (as a DSU) + `stock-stable-5` (in `system`) | Boots, **needs the `lmkd` fix below or it hangs**. Magisk daemon doesn't start. 1080p video and flashlight OK with `stock-stable-5` |
+
+Only `a64` / `arm32_binder64` GSIs work on this phone (32-bit userspace); `arm64` ones won't boot.
+
+How I installed them (stock v30 `super` has no room for a GSI next to `product`):
+```
+fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img   # bootloader, stock v30 vbmeta
+fastboot reboot fastboot                                                    # fastbootd
+fastboot delete-logical-partition product
+fastboot flash system <gsi>.img
+fastboot reboot bootloader
+fastboot erase userdata
+fastboot reboot
+```
+
+**Same on all three:** the lid is detected (`s22_lid`) and TT9 S22 is installed by the image. Android doesn't see the outer screen as a display on a GSI: only the kernel clock is there.
+
+**Android 13 (LineageOS 20 GSI):**
+- TT9 S22 gets installed but the setup wizard keeps the stock keyboard: pick TT9 S22 once in Settings → Languages & input.
+- `adb root` is off by default (Developer options → Rooted debugging). Wi‑Fi can't be joined from `adb` without root: do it on the phone.
+
+**Android 15 (VoltageOS 4.5):**
+- TT9 S22 is the keyboard from the first boot, and the lid already puts the phone to sleep (`lid_behavior=1`).
+- The build reports as `user`, so no `adb root`; Magisk's `su` lives in `/debug_ramdisk/su` there (not in the `PATH`).
+
+**Android 16 (TrebleDroid):**
+- Wi‑Fi (connected, internet), Bluetooth on, speaker audio, both cameras, all 23 sensors, battery, GPS service up (no fix tested), lid open/close, TT9 S22 installed by the image and set as keyboard (checked as a DSU with `stock-stable-4`).
 - **2nd screen:** the kernel draws the clock by itself with the lid closed. **On Android 15+ the clock shows the wrong local time** (UTC + DST hour; 1 h behind in Spain): [#1](../../issues/1).
 - **Hang fix (needed on the stock v30 vendor):** the vendor sets `ro.lmk.use_psi=false`, Android 16 has no memcg v1 and this kernel has no in-kernel LMK, so `lmkd` exits in a loop and `system_server` blocks waiting for it (SystemUI / phone ANRs). The kernel has PSI, so the fix is `ro.lmk.use_psi=true`. Hot fix as root (`adb root`, see the Magisk point below): `adb shell /debug_ramdisk/resetprop ro.lmk.use_psi true` then `adb shell setprop ctl.start lmkd` (TrebleDroid's `phh-on-boot.sh` stops services that crash-loop, so `lmkd` won't come back alone). Plain `resetprop` isn't in the `PATH` there, cuz the Magisk daemon doesn't start; Magisk's early init still leaves it in `/debug_ramdisk`. It's lost on reboot.
 - Magisk 27.0 from the image doesn't start on that GSI; root there comes from the `userdebug` build (`adb root`). Magisk's early init still runs `overlay.d` (that's how TT9 S22 got installed); it's the Magisk daemon that doesn't start.
 - To make the phone sleep when the lid closes, run once: `adb shell settings put global lid_behavior 1` (AOSP default is "do nothing").
 - Digits, `*`, `#`, C, back, green and recents work with AOSP `Generic.kl`.
-- **Not tested on the GSI:** calls (no SIM). IMS / VoLTE: [#2](../../issues/2).
+
+### CAT's stock Android 11 (v30)
+
+`stock-stable-4` on the stock v30 system (`/data` wiped): outer screen, audio, cameras, keypad, lid (sleep/wake) and Wi‑Fi checked by hand. Magisk is there (the app has to be installed). `stock-stable-5` not tried on stock yet.
+
+### My own LineageOS 20
+
+My daily build (not public), stock v30 vendor: everything above the line in this README was developed and measured there. Video recording was broken there too before `stock-stable-5`.
+
+### Not tested anywhere
+
+Calls with a SIM, IMS / VoLTE / VoWiFi: [#2](../../issues/2).
 
 ## Source
 
-- **Kernel source (GPLv2):** branch [`stock-stable-4`](../../tree/stock-stable-4). Every change from the Qualcomm base is a separate commit with a full description. The tag `stock-stable-4` is the exact source of the release image; the branch only adds copyright notices on top (comments).
+- **Kernel source (GPLv2):** branch and tag [`stock-stable-5`](../../tree/stock-stable-5), the exact source of the release image. Every change from the Qualcomm base is a separate commit with a full description. Older: [`stock-stable-4`](../../tree/stock-stable-4) (the tag `stock-stable-4` is the exact source of that image; the branch adds copyright notices on top, comments only).
 - Defconfig: `arch/arm/configs/s22flip_defconfig`.
 - Build: AOSP Clang 10.0.6 `r377782d` with the GCC 4.9 `arm-linux-androideabi` binutils:
   ```
