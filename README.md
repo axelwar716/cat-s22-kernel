@@ -31,7 +31,7 @@ bfb84f2d71a4f804bd03968451f70b33deb6090c54180d083ee65cb2efc26801  boot-s22-stock
 95481d05f6d9ce87a01629fce0ef15ce8724eaf7e4c3e7ab8743f38d94f546ab  TT9S22-en.apk
 ```
 
-Don't want TT9? Uninstall it like any app: it won't be reinstalled on the next boot.
+Don't want TT9? Uninstall it like any app: it won't be reinstalled on the next boot. Using another keyboard app instead? Set its own key debounce ("accidental key repeat protection") to **0 ms / off**, or it stacks on top of the kernel's and fast presses get dropped (details in [TT9 S22 keyboard](#tt9-s22-keyboard)).
 
 ## Install
 
