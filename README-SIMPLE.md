@@ -12,11 +12,15 @@ You get one file. You put it on the phone. Your apps, photos and settings stay w
 
 ## What it fixes
 
-- **Keypad.** On stock, letters come out doubled ("hhello") and soft taps get ignored, especially on the 1 / 4 / 7 / * keys. Now every press counts once, even on worn keys.
-- **Lid.** On stock, Android never really knew if the flip was open or closed. Now it does.
-- **Outer screen (the small one on the outside).** With the lid closed it shows the **time, the date and the battery %**, by itself, no app needed. It lights up for 8 seconds when you close the lid or press volume / the orange key. With the lid open it stays off.
-- **Missing parts CAT never published:** touchscreen, loudspeaker, headphones over USB‑C, the hearing-aid coil, the keypad backlight and the lid sensor. All work.
-- **Battery:** with the lid closed it barely uses anything (measured over 35.7 hours with the lid closed, on my LineageOS).
+- **Keypad.** On stock, letters come out doubled ("hhello") and soft taps get ignored, especially on the 1 / 4 / 7 / * keys. Now every press counts once, even on worn keys. Why it was broken? Four suspects, all guilty:
+  - **The kernel driver** looked at the key exactly once, ~10 ms after you touched it, while the contact was still bouncing for up to 18 ms. It basically asked "one press or two?" mid-bounce and guessed with a coin. Hello "hhello".
+  - **The circuit** was designed for brand-new keys only. A worn key sends a weaker signal and the stock wiring just shrugs: "too quiet, didn't happen". Apparently nobody pictured a keypad older than six months.
+  - **Android** asks the text box "hey, what's before the cursor?" and some apps take a little nap before answering. Your letter waits, gets bored and leaves.
+  - **The keyboard app** was on vacation: an extra delay stacked on top of everything else, letters dropped when it got busy, and the odd random space when a timer ran out. TT9 S22 is the one that came back from holidays.
+- **Lid.** On stock, Android never really knew if the flip was open or closed. Now it does. Why: the kernel announced the lid as a mystery key that Android had never heard of, so Android left it on read.
+- **Outer screen (the small one on the outside).** With the lid closed it shows the **time, the date and the battery %**, by itself, no app needed. It lights up for 8 seconds when you close the lid or press volume / the orange key. With the lid open it stays off. Why it was a mess: the stock driver waited for a "ready" signal the screen never sends (patience of a saint, memory of a goldfish), mixed up its colors, and could jam its own queue and freeze the phone when you closed the lid.
+- **Missing parts CAT never published:** touchscreen, loudspeaker, headphones over USB‑C, the hearing-aid coil, the keypad backlight and the lid sensor. All work. Why: CAT never shared their kernel code, so the missing bits were dug out of other phones' public kernels and CAT's own binaries. Treasure hunt, no map.
+- **Battery:** with the lid closed it barely uses anything (measured over 35.7 hours with the lid closed, on my LineageOS). No villain here: the outside clock wakes up once a minute, draws, and goes straight back to sleep.
 
 ## What else comes in the file
 
