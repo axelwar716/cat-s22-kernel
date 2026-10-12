@@ -1,0 +1,8 @@
+service tt9-s22-install /system/bin/sh ${MAGISKTMP}/tt9-s22-install.sh
+    user root
+    seclabel u:r:magisk:s0
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start tt9-s22-install
