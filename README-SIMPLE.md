@@ -40,6 +40,8 @@ Turn its "key repeat protection" / debounce **off (0)**. the kernel already does
 
 U need an **unlocked bootloader** and a PC with `adb` and `fastboot`. don't know what that is? google first, flash later.
 
+or just read [this XDA thread](https://xdaforums.com/t/cat-s22-flip-installing-gsi-rom.4660690/), any page, doesn't matter. people there explain unlocking, backup and flashing step by step, way better than google.
+
 1. Download `boot-s22-stock-stable-4-tt9en.img` from [Releases](../../releases/tag/stock-stable-4).
 2. **Back up ur current `boot.img`.** that's ur undo button.
 3. Run:

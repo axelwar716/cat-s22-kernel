@@ -37,6 +37,8 @@ Don't want TT9? Uninstall it like any app: it won't be reinstalled on the next b
 
 Only `boot` is replaced: **no wipe**, your ROM and data stay as they are. One image for every ROM. Needs an **unlocked bootloader**.
 
+Never unlocked the bootloader or backed up `boot` before? Read the XDA thread [CAT S22 Flip: installing GSI ROM](https://xdaforums.com/t/cat-s22-flip-installing-gsi-rom.4660690/), any page: people there explain unlocking, backing up and flashing step by step.
+
 1. **Back up your current `boot.img` first.**
 2. Flash:
    ```
