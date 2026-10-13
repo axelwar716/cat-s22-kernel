@@ -50,12 +50,12 @@ static int32_t qm215_flash_low(
 
 		CDBG("flash op low gpio num %d(state:%d) %d(state: %d)\n",
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_NOW],
-			GPIO_OUT_HIGH,
+			GPIO_OUT_LOW,
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_EN],
 			GPIO_OUT_HIGH);
 		gpio_set_value_cansleep(
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_NOW],
-			GPIO_OUT_HIGH);
+			GPIO_OUT_LOW);
 		gpio_set_value_cansleep(
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_EN],
 			GPIO_OUT_HIGH);
@@ -86,12 +86,12 @@ static int32_t qm215_flash_high(
 
 		CDBG("flash op high gpio num %d(state:%d) %d(state:%d)\n",
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_NOW],
-			GPIO_OUT_LOW,
+			GPIO_OUT_HIGH,
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_EN],
 			GPIO_OUT_HIGH);
 		gpio_set_value_cansleep(
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_NOW],
-			GPIO_OUT_LOW);
+			GPIO_OUT_HIGH);
 		gpio_set_value_cansleep(
 			gpio_num_info->gpio_num[SENSOR_GPIO_FL_EN],
 			GPIO_OUT_HIGH);

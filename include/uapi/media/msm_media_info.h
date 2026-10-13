@@ -1305,8 +1305,11 @@ static inline unsigned int VENUS_BUFFER_SIZE(
 		uv_alignment = 4096;
 		y_plane = y_stride * y_sclines;
 		uv_plane = uv_stride * uv_sclines + uv_alignment;
-		size = y_plane + uv_plane +
-				MSM_MEDIA_MAX(extra_size, 8 * y_stride);
+		/*
+		 * S22: no in-plane extradata margin, same size the v30 vendor
+		 * gralloc allocates for camera->encoder buffers.
+		 */
+		size = y_plane + uv_plane;
 		size = MSM_MEDIA_ALIGN(size, 4096);
 
 		/* Additional size to cover last row of non-aligned frame */
